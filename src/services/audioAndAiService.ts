@@ -1,4 +1,10 @@
 import { PartnerPersona } from '../types';
+import {
+  evaluateSlotAttempt,
+  evaluateSimulatorTurnDeterministically,
+  SimulatorTurnContext,
+  StrictExaminerResult
+} from '../utils/pingPongLogic';
 
 class SoundEffectsManager {
   private ctx: AudioContext | null = null;
@@ -7,7 +13,9 @@ class SoundEffectsManager {
   private getContext(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
     if (!this.ctx) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
       }
@@ -107,10 +115,20 @@ class SoundEffectsManager {
 
 export const sfx = new SoundEffectsManager();
 
-export function speakGermanText(text: string, rate: 0.8 | 1.0 = 1.0): void {
-  if (sfx.muted || typeof window === 'undefined') return;
+export function speakGermanText(
+  text: string,
+  rate: 0.8 | 0.85 | 1.0 = 1.0,
+  onSpeechStateChange?: (isSpeaking: boolean) => void
+): void {
+  if (sfx.muted || typeof window === 'undefined') {
+    onSpeechStateChange?.(false);
+    return;
+  }
   const cleanText = text.replace(/\[.*?\]/g, '').replace(/\s+/g, ' ').trim();
-  if (!cleanText) return;
+  if (!cleanText) {
+    onSpeechStateChange?.(false);
+    return;
+  }
 
   if ('speechSynthesis' in window) {
     try {
@@ -124,11 +142,24 @@ export function speakGermanText(text: string, rate: 0.8 | 1.0 = 1.0): void {
       if (germanVoice) {
         utterance.voice = germanVoice;
       }
+      utterance.onstart = () => {
+        onSpeechStateChange?.(true);
+      };
+      utterance.onend = () => {
+        onSpeechStateChange?.(false);
+      };
+      utterance.onerror = () => {
+        onSpeechStateChange?.(false);
+      };
+      onSpeechStateChange?.(true);
       window.speechSynthesis.speak(utterance);
       return;
     } catch (e) {
       console.warn('Browser speechSynthesis fallback error:', e);
+      onSpeechStateChange?.(false);
     }
+  } else {
+    onSpeechStateChange?.(false);
   }
 }
 
@@ -157,49 +188,62 @@ export async function speakGermanGeminiTts(text: string, voiceName = 'Kore'): Pr
   }
 }
 
+export interface SpeechRecognitionOptions {
+  lang?: 'de-DE' | 'ar-MA';
+  continuous?: boolean;
+}
+
 export function startBrowserSpeechRecognition(
-  onResult: (transcript: string, isFinal: boolean) => void,
+  onResult: (transcript: string, isFinal: boolean, interimTranscript?: string) => void,
   onError: (errMsg: string) => void,
-  onEnd: () => void
+  onEnd: () => void,
+  options: SpeechRecognitionOptions = {}
 ): { stop: () => void } | null {
   if (typeof window === 'undefined') return null;
   const SpeechRec =
-    (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition ||
+    (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
+      .SpeechRecognition ||
     (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
 
   if (!SpeechRec) {
-    onError('المتصفح ديالك ما كيدعمش الميكرو المباشر. تقدر تكتب الجواب أو تختار الجملة الصحيحة.');
+    onError(
+      'المتصفح ديالك ما كيدعمش الميكرو المباشر (Web Speech API). تقدر تكتب الجواب أو تضغط على زر الجملة باش تسمعها وتدرب عليها!'
+    );
     onEnd();
     return null;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognition = new (SpeechRec as any)();
-  recognition.lang = 'de-DE';
+  recognition.lang = options.lang || 'de-DE';
+  recognition.continuous = options.continuous ?? true;
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
+
+  let accumulatedFinal = '';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   recognition.onresult = (event: any) => {
     let interim = '';
-    let finalTxt = '';
     for (let i = event.resultIndex; i < event.results.length; ++i) {
       const t = event.results[i][0].transcript;
       if (event.results[i].isFinal) {
-        finalTxt += t;
+        accumulatedFinal = `${accumulatedFinal} ${t}`.trim();
       } else {
         interim += t;
       }
     }
-    if (finalTxt) {
-      onResult(finalTxt.trim(), true);
-    } else if (interim) {
-      onResult(interim.trim(), false);
+    const combined = `${accumulatedFinal} ${interim}`.trim();
+    if (combined) {
+      onResult(combined, interim.length === 0, interim.trim());
     }
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   recognition.onerror = (event: any) => {
+    if (event?.error === 'aborted' || event?.error === 'no-speech') {
+      return;
+    }
     onError(`خطأ فـ الميكرو (${event?.error || 'غير معروف'})`);
   };
 
@@ -207,7 +251,14 @@ export function startBrowserSpeechRecognition(
     onEnd();
   };
 
-  recognition.start();
+  try {
+    recognition.start();
+  } catch {
+    onError('تعذر تشغيل الميكروفون. تأكد من إعطاء صلاحية الميكرو فـ المتصفح.');
+    onEnd();
+    return null;
+  }
+
   return {
     stop: () => {
       try {
@@ -232,6 +283,16 @@ export async function fastGradeSlotSubmission(params: {
   roundNumber: number;
   topicTitle: string;
 }): Promise<FastGradeResponse> {
+  const localStrict = evaluateSlotAttempt(params.userTranscript, params.targetSlot);
+  if (localStrict.scoreOutOf60 === 0) {
+    return {
+      score: 0,
+      verbAtEndCorrect: false,
+      correctedGerman: params.targetSlot,
+      darijaFeedback: localStrict.feedbackDarija
+    };
+  }
+
   try {
     const res = await fetch('/api/gemini/fast-grade', {
       method: 'POST',
@@ -239,48 +300,90 @@ export async function fastGradeSlotSubmission(params: {
       body: JSON.stringify(params)
     });
     if (!res.ok) throw new Error('Grade request failed');
-    return (await res.json()) as FastGradeResponse;
+    const data = (await res.json()) as FastGradeResponse;
+    return {
+      score: typeof data.score === 'number' ? data.score : Math.round((localStrict.scoreOutOf60 / 60) * 100),
+      verbAtEndCorrect: Boolean(data.verbAtEndCorrect ?? localStrict.verbAtEndCorrect),
+      correctedGerman: data.correctedGerman || params.targetSlot,
+      darijaFeedback: data.darijaFeedback || localStrict.feedbackDarija
+    };
   } catch {
     return {
-      score: 85,
-      verbAtEndCorrect: true,
+      score: Math.round((localStrict.scoreOutOf60 / 60) * 100),
+      verbAtEndCorrect: localStrict.verbAtEndCorrect,
       correctedGerman: params.targetSlot,
-      darijaFeedback: 'برافو يا محمد! الجملة مفهومة والفعل المصرف جا فـ بلاصتو فـ آخر الجملة.'
+      darijaFeedback: localStrict.feedbackDarija
     };
   }
 }
 
-export interface ExaminerPartnerResponse {
-  partnerGermanReply: string;
-  darijaCoachingTip: string;
-  grammarCorrection: string;
-  estimatedScoreOutOf60: number;
-  sauerstoffHintIfNeeded: string;
-}
+export async function evaluateTurnWithStrictExaminer(
+  ctx: SimulatorTurnContext & { persona: PartnerPersona; topicTitle: string }
+): Promise<StrictExaminerResult> {
+  // Always compute Tier 2 Strict Deterministic evaluation first
+  const det = evaluateSimulatorTurnDeterministically(ctx);
 
-export async function chatWithAiExaminer(params: {
-  mode: 'teil1' | 'teil2' | 'teil3' | 'interview';
-  persona: PartnerPersona;
-  topicTitle: string;
-  userMessage: string;
-  roundNumber?: number;
-}): Promise<ExaminerPartnerResponse> {
+  // If sanity filter rejected input (< 4 words, profanity, slang, or non-German), return 0/60 immediately!
+  if (det.isSanityRejected) {
+    return det;
+  }
+
+  // Otherwise try Tier 1 (/api/gemini/chat powered by gemini-3.8-flash) and merge with turn progression state
   try {
     const res = await fetch('/api/gemini/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify({
+        mode: ctx.mode,
+        persona: ctx.persona,
+        topicTitle: ctx.topicTitle,
+        userMessage: ctx.userMessage,
+        roundNumber: ctx.roundNumber,
+        targetSentenceDe: det.correctedGermanSentence,
+        nextPartnerTemplateDe: det.partnerGermanReply
+      })
     });
-    if (!res.ok) throw new Error('Chat request failed');
-    return (await res.json()) as ExaminerPartnerResponse;
-  } catch {
-    return {
-      partnerGermanReply: 'Das ist ein sehr interessanter Punkt, Mohammed! Da stimme ich dir vollkommen zu. Lass uns den nächsten Punkt besprechen: Was hältst du davon?',
-      darijaCoachingTip: 'تبارك الله عليك! حافظتي على منهجية البينغ بونغ وركلتي الفعل للخر.',
-      grammarCorrection: 'الجملة ديالك سليمة نحوياً على مستوى B2.',
-      estimatedScoreOutOf60: 57,
-      sauerstoffHintIfNeeded: 'Was hältst du von der Verpflegung? Sollen wir ein Buffet machen oder grillen?'
+    if (!res.ok) throw new Error('Backend Gemini call failed');
+    const aiData = (await res.json()) as {
+      scoreOutOf60?: number;
+      cefrLevel?: '0' | 'A1' | 'A2' | 'B1' | 'B2';
+      verbAtEndCorrect?: boolean;
+      pronunciationAndGrammarFeedbackDarija?: string;
+      correctedGermanSentence?: string;
+      partnerGermanReply?: string;
+      sauerstoffHintIfNeeded?: string;
     };
+
+    const validCefr =
+      aiData.cefrLevel && ['0', 'A1', 'A2', 'B1', 'B2'].includes(aiData.cefrLevel)
+        ? aiData.cefrLevel
+        : det.cefrLevel;
+
+    return {
+      ...det,
+      scoreOutOf60:
+        typeof aiData.scoreOutOf60 === 'number'
+          ? Math.max(0, Math.min(60, aiData.scoreOutOf60))
+          : det.scoreOutOf60,
+      cefrLevel: validCefr,
+      verbAtEndCorrect:
+        typeof aiData.verbAtEndCorrect === 'boolean'
+          ? aiData.verbAtEndCorrect
+          : det.verbAtEndCorrect,
+      pronunciationAndGrammarFeedbackDarija:
+        aiData.pronunciationAndGrammarFeedbackDarija || det.pronunciationAndGrammarFeedbackDarija,
+      correctedGermanSentence:
+        aiData.correctedGermanSentence || det.correctedGermanSentence,
+      // For Teil 2, Teil 1, Teil 3, and Interview, keep the structured Ping-Pong round progression reply or AI reply
+      partnerGermanReply:
+        ctx.mode === 'teil2' || ctx.mode === 'teil1'
+          ? det.partnerGermanReply
+          : aiData.partnerGermanReply || det.partnerGermanReply,
+      sauerstoffHintIfNeeded:
+        aiData.sauerstoffHintIfNeeded || det.sauerstoffHintIfNeeded
+    };
+  } catch {
+    return det;
   }
 }
 
@@ -304,7 +407,10 @@ export async function queryGermanCareerSearch(queryText: string): Promise<{
   }
 }
 
-export async function fetchLiveProteinSummary(uniprotId: string, pdbId: string): Promise<{
+export async function fetchLiveProteinSummary(
+  uniprotId: string,
+  pdbId: string
+): Promise<{
   sequenceLength: number;
   entryTitle: string;
   resolution: string;

@@ -33,38 +33,49 @@ async function startServer() {
   // 1. Low-Latency Slot & Speaking Grader (gemini-3.1-flash-lite)
   app.post('/api/gemini/fast-grade', async (req, res) => {
     try {
-      const { spokenText, targetClause, contextType, topicTitle } = req.body;
+      const { userTranscript, spokenText, targetSlot, targetClause, roundNumber, topicTitle } = req.body;
+      const actualSpoken = String(userTranscript || spokenText || '').trim();
+      const actualTarget = String(targetSlot || targetClause || '').trim();
+
+      const words = actualSpoken.replace(/[.,!?"„“”]/g, '').split(/\s+/).filter(Boolean);
+      if (words.length < 3) {
+        res.json({
+          score: 0,
+          verbAtEndCorrect: false,
+          correctedGerman: actualTarget,
+          darijaFeedback: `⚠️ قلتي غير '${actualSpoken || '...'}'! راه فـ الامتحان ما غاديش تاخد نقط على كلمة وحدة. قول الجملة كاملة بالألمانية وحط الفعل فاللخر!`
+        });
+        return;
+      }
+
       const ai = getGenAIClient();
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite',
-        contents: `Du bist ein zertifizierter TELC B2 Prüfer für Mohammed El Jebouri (22, aus Fès, Bachelor Wirtschaft).
-Kontext: ${contextType || 'Teil 2 Ping-Pong Slot'} — Thema: "${topicTitle || 'Allgemein'}".
-Ziel-Nebensatz (mit Verb am Ende nach "dass"): "${targetClause}"
-Gesprochener Text von Mohammed: "${spokenText}"
+        contents: `Du bist ein strenger, fairer TELC B2 Prüfer für Mohammed El Jebouri (22, aus Fès, Bachelor Wirtschaft).
+Thema: "${topicTitle || 'Allgemein'}" (Ronde ${roundNumber || 1}).
+Erwarteter Ziel-Satz (mit Verb am Ende nach "dass"): "${actualTarget}"
+Gesprochener Text von Mohammed: "${actualSpoken}"
 
-Prüfe:
-1. Steht das konjugierte Verb korrekt am Ende des Nebensatzes (Verb-Endstellung nach dass/weil/ob/wann)?
-2. Ist der Inhalt verständlich und auf B2-Niveau?
+Prüfe streng:
+1. Wenn der Text kein Deutsch ist oder weniger als 4 Wörter hat, gib score = 0!
+2. Steht das konjugierte Verb korrekt am Ende des Nebensatzes (Verb-Endstellung nach dass/weil/ob/wann)?
+3. Gib ehrliches Feedback auf Marokkanischer Darija (arabische Schrift).
 Antworte im JSON-Format.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              scoreOutOf60: { type: Type.INTEGER },
-              cefrLevel: { type: Type.STRING },
+              score: { type: Type.INTEGER },
               verbAtEndCorrect: { type: Type.BOOLEAN },
               correctedGerman: { type: Type.STRING },
-              darijaCoaching: { type: Type.STRING },
-              praiseDe: { type: Type.STRING },
+              darijaFeedback: { type: Type.STRING },
             },
             required: [
-              'scoreOutOf60',
-              'cefrLevel',
+              'score',
               'verbAtEndCorrect',
               'correctedGerman',
-              'darijaCoaching',
-              'praiseDe',
+              'darijaFeedback',
             ],
           },
         },
@@ -78,36 +89,83 @@ Antworte im JSON-Format.`,
     }
   });
 
-  // 2. Multi-Turn Conversational Partner & Deep Thinking Coach (gemini-3.8-flash)
+  // 2. Strict AI Examiner & Conversational Partner (gemini-3.8-flash)
   app.post('/api/gemini/chat', async (req, res) => {
     try {
-      const { messages, roleMode, topicTitle, highThinking } = req.body;
-      const ai = getGenAIClient();
-      const systemInstruction = `Du bist der interaktive TELC B2 Mündlich & Karriere Partner für Mohammed El Jebouri (22 Jahre alt, aus Fès, Marokko, Abitur in Physik & Chemie, Bachelor in Wirtschaft, Hobbys: Sport, Zeichnen, Videospiele).
-Aktueller Modus: ${roleMode || 'Teil 2 Ping-Pong Partner'} | Thema: ${topicTitle || 'TELC B2'}.
-Regeln:
-- Antworte zuerst auf natürlichem, klarem Deutsch (Niveau B2, 2-4 Sätze) passend zur Ping-Pong-Methodik.
-- Gib danach in einer neuen Zeile einen kurzen Coaching-Tipp auf Marokkanischer Darija (arabische Schrift) und eine geschätzte Punktzahl (z.B. 58/60 Punkte • Niveau B2).`;
+      const {
+        mode,
+        persona,
+        topicTitle,
+        userMessage,
+        roundNumber,
+        targetSentenceDe,
+        nextPartnerTemplateDe,
+      } = req.body;
 
-      const contents = Array.isArray(messages)
-        ? messages.map((m: { role: string; text: string }) => ({
-            role: m.role === 'model' ? 'model' : 'user',
-            parts: [{ text: String(m.text || '') }],
-          }))
-        : [{ role: 'user', parts: [{ text: String(req.body.prompt || 'Hallo!') }] }];
+      const rawMsg = String(userMessage || '').trim();
+      const words = rawMsg.replace(/[.,!?"„“”]/g, '').split(/\s+/).filter(Boolean);
+      if (words.length < 4) {
+        res.json({
+          scoreOutOf60: 0,
+          cefrLevel: '0',
+          verbAtEndCorrect: false,
+          pronunciationAndGrammarFeedbackDarija: `⚠️ قلتي غير '${rawMsg}'! راه فـ الامتحان الحقيقي ما غاديش تاخد نقط على كلمة وحدة أو كلمة خارج الموضوع 😄 برك على المايك 🎙️ وقول هاد الجملة كاملة بالألمانية:`,
+          correctedGermanSentence: String(targetSentenceDe || ''),
+          partnerGermanReply:
+            'Entschuldigung Mohammed, aber das war kein vollständiger deutscher Satz zu unserem Thema! Bitte sprich oder schreib einen ganzen Satz auf Deutsch.',
+          sauerstoffHintIfNeeded: String(targetSentenceDe || ''),
+        });
+        return;
+      }
+
+      const ai = getGenAIClient();
+      const systemInstruction = `Du bist ein strenger, zertifizierter TELC B2 Mündlich Prüfer & Gesprächspartner für Mohammed El Jebouri (22, aus Fès, Marokko; Abitur in Physik & Chemie; Bachelor in Wirtschaft).
+Modus: ${mode || 'teil2'} | Partner-Persona: ${persona || 'friendly'} | Thema: ${topicTitle || 'TELC B2'} | Aktuelle Runde: ${roundNumber || 1}.
+Erwarteter Ziel-Satz in dieser Runde: "${targetSentenceDe || ''}"
+Vorgeschlagene nächste Partner-Antwort (Ronde ${(Number(roundNumber) || 1) + 1}): "${nextPartnerTemplateDe || ''}"
+
+WICHTIGE PRÜFUNGSREGELN (KEINE GRATIS-PUNKTE!):
+1. Wenn Mohammeds Eingabe kein echtes Deutsch ist, Englisch/Slang ist oder das Thema komplett verfehlt: scoreOutOf60 = 0, cefrLevel = "0".
+2. Prüfe genau, ob er die Ping-Pong-Vorlage genutzt hat und ob das konjugierte Verb nach "dass", "weil", "ob", "wenn" am Ende steht (verbAtEndCorrect).
+3. Gib in "pronunciationAndGrammarFeedbackDarija" eine ehrliche, konkrete Kritik auf Marokkanischer Darija (arabische Schrift): was war richtig, welches Verb oder Wort fehlte.
+4. Gib in "correctedGermanSentence" den idealen B2-Satz für Mohammeds aktuelle Runde.
+5. Gib in "partnerGermanReply" die nächste Antwort des Partners auf Deutsch (nutze gerne "${nextPartnerTemplateDe || ''}" als Basis), die das Gespräch in die nächste Runde führt.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
-        contents,
+        contents: `Mohammed hat gesagt: "${rawMsg}"`,
         config: {
           systemInstruction,
           thinkingConfig: {
-            thinkingLevel: highThinking ? ThinkingLevel.HIGH : ThinkingLevel.LOW,
+            thinkingLevel: ThinkingLevel.LOW,
+          },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              scoreOutOf60: { type: Type.INTEGER },
+              cefrLevel: { type: Type.STRING },
+              verbAtEndCorrect: { type: Type.BOOLEAN },
+              pronunciationAndGrammarFeedbackDarija: { type: Type.STRING },
+              correctedGermanSentence: { type: Type.STRING },
+              partnerGermanReply: { type: Type.STRING },
+              sauerstoffHintIfNeeded: { type: Type.STRING },
+            },
+            required: [
+              'scoreOutOf60',
+              'cefrLevel',
+              'verbAtEndCorrect',
+              'pronunciationAndGrammarFeedbackDarija',
+              'correctedGermanSentence',
+              'partnerGermanReply',
+              'sauerstoffHintIfNeeded',
+            ],
           },
         },
       });
 
-      res.json({ text: response.text ?? '' });
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      res.json(parsed);
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : String(error),

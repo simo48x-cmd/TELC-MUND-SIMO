@@ -43,7 +43,9 @@ import {
   checkVerbAtEnd,
   buildDistractorWithMiddleVerb,
   transformDirectToIndirectQuestion,
-  evaluateSlotSimilarity
+  evaluateSlotSimilarity,
+  getExpectedSentenceForTurn,
+  SimulatorTurnContext
 } from '../utils/pingPongLogic';
 import {
   sfx,
@@ -51,7 +53,7 @@ import {
   speakGermanGeminiTts,
   startBrowserSpeechRecognition,
   fastGradeSlotSubmission,
-  chatWithAiExaminer,
+  evaluateTurnWithStrictExaminer,
   queryGermanCareerSearch,
   fetchLiveProteinSummary
 } from '../services/audioAndAiService';
@@ -95,6 +97,7 @@ interface AppUiRuntimeState {
   selectedJokerPointNumber: number;
   prepTimerSeconds: number;
   prepTimerRunning: boolean;
+  teil3CheckedPointNumbers: number[];
 
   // Levels & Plan state
   activeCertExam: CertificationExam | null;
@@ -111,13 +114,35 @@ interface AppUiRuntimeState {
   aiPersona: PartnerPersona;
   aiUserMessage: string;
   aiLoading: boolean;
+  simHandsFreeMode: boolean;
+  simIsListening: boolean;
+  simSpeechLang: 'de-DE' | 'ar-MA';
+  simAutoSendAfterSilence: boolean;
+  simAutoSpeakReply: boolean;
+  simSpeakSpeed: 0.85 | 1.0;
+  simPartnerIsSpeaking: boolean;
+  simHintVisible: boolean;
+  simRoundNumber: number;
+  simTurnScores: number[];
   aiConversation: Array<{
     sender: 'mohammed' | 'partner';
     textDe: string;
     darijaTip?: string;
     correction?: string;
     score?: number;
+    cefrLevel?: '0' | 'A1' | 'A2' | 'B1' | 'B2';
+    isSanityRejected?: boolean;
+    correctedSentenceDe?: string;
     sauerstoff?: string;
+    scorecard?: {
+      ausdruck: number;
+      aufgabe: number;
+      korrektheit: number;
+      aussprache: number;
+      totalOutOf60: number;
+      passed: boolean;
+      summaryDarija: string;
+    };
   }>;
   careerSearchQuery: string;
   careerSearchResult: { text: string; sources: Array<{ uri: string; title: string }> } | null;
@@ -151,6 +176,8 @@ export class TelcMasterAppUI {
   private state: AppUiRuntimeState;
   private prepInterval: number | null = null;
   private activeSpeechRec: { stop: () => void } | null = null;
+  private simSpeechRec: { stop: () => void } | null = null;
+  private simSilenceTimer: number | null = null;
   private cloudUnsub: (() => void) | null = null;
 
   constructor(root: HTMLElement, spatialScene: TelcSpatialScene | null = null) {
@@ -198,6 +225,7 @@ export class TelcMasterAppUI {
       selectedJokerPointNumber: 1,
       prepTimerSeconds: 20 * 60,
       prepTimerRunning: false,
+      teil3CheckedPointNumbers: [],
 
       activeCertExam: null,
       certAnswers: {},
@@ -212,12 +240,22 @@ export class TelcMasterAppUI {
       aiPersona: 'friendly',
       aiUserMessage: '',
       aiLoading: false,
+      simHandsFreeMode: false,
+      simIsListening: false,
+      simSpeechLang: 'de-DE',
+      simAutoSendAfterSilence: true,
+      simAutoSpeakReply: true,
+      simSpeakSpeed: 1.0,
+      simPartnerIsSpeaking: false,
+      simHintVisible: false,
+      simRoundNumber: 1,
+      simTurnScores: [],
       aiConversation: [
         {
           sender: 'partner',
-          textDe: 'Hallo Mohammed! Lass uns mit Teil 2 (Fast Food) starten. Wie lautet deine Einleitung in Ronde 1?',
-          darijaTip: 'ابدأ بالجولة 1: Der Text befasst sich mit dem Thema... Zuerst wird beschrieben, dass...',
-          score: 60
+          textDe: 'Hallo Mohammed! Lass uns mit Teil 2 (Thema #1: Fast Food) starten. Bitte sprich oder schreib deine Ronde 1 (Einleitung + Fikra 1 aus dem Text)!',
+          darijaTip: '🎙️ برك على "هضر بصوتك" وقول الجولة 1: Der Text befasst sich mit dem Thema „Fast Food“. Zuerst wird beschrieben, dass...',
+          correctedSentenceDe: `Der Text befasst sich mit dem Thema „${exam1.slot1Theme}“. Zuerst wird beschrieben, dass ${exam1.slot2Point1}. Welche Informationen hast du noch gefunden?`
         }
       ],
       careerSearchQuery: 'Bachelor Wirtschaft Berufseinstieg Controlling Gehalt Deutschland',
@@ -1475,8 +1513,20 @@ export class TelcMasterAppUI {
                 </div>
               </div>
               <p class="text-xs opacity-80" dir="rtl">
-                قيد هنا غير رؤوس الأقلام كيفما غدير فـ قاعة التحضير نهار الامتحان (كتحفظ أوتوماتيكياً فـ حسابك):
+                قيد هنا غير رؤوس الأقلام كيفما غدير فـ قاعة التحضير نهار الامتحان (ملي كتهضر فـ المحاكي الصوتي على أي نقطة من الـ 20 كتعلم أوتوماتيكياً بـ ✅):
               </p>
+              <div class="flex flex-wrap gap-1.5" dir="ltr">
+                ${TEIL3_20_UNIVERSAL_POINTS.slice(0, 12)
+                  .map((pt) => {
+                    const checked = this.state.teil3CheckedPointNumbers.includes(pt.number);
+                    return `<span class="px-2 py-0.5 rounded text-[11px] font-mono-de border ${
+                      checked
+                        ? 'bg-emerald-500/25 border-emerald-400 text-emerald-300 font-bold'
+                        : 'bg-black/20 border-white/10 opacity-75'
+                    }">${checked ? '✅' : '⬜'} #${pt.number} ${escapeHtml(pt.titleDe.split('(')[0].trim())}</span>`;
+                  })
+                  .join('')}
+              </div>
               <textarea
                 data-action="update-scratchpad"
                 rows="6"
@@ -2107,19 +2157,147 @@ export class TelcMasterAppUI {
             </div>
           </div>
 
-          <!-- Right 5 Cols: Live AI Examiner & Partner Simulator + Search Grounding -->
+          <!-- Right 5 Cols: Live AI Examiner & Partner Simulator + Hands-Free Voice + Search Grounding -->
           <div class="lg:col-span-5 space-y-4">
-            <div class="studio-card rounded-2xl p-5 space-y-4 lg:sticky lg:top-36">
-              <div dir="rtl">
-                <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-indigo-500/20 text-indigo-300">
-                  Gemini Flash Free-Tier Prüfer & Partner
+            <div class="studio-card rounded-2xl p-5 space-y-4 lg:sticky lg:top-24 border-2 border-indigo-500/40">
+              <!-- Simulator Header & Speaking Avatar Indicator -->
+              <div class="flex flex-wrap items-center justify-between gap-2" dir="rtl">
+                <div>
+                  <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-indigo-500/20 text-indigo-300" dir="ltr">
+                    Strict TELC B2 Prüfer • 2-Tier Real AI Engine
+                  </span>
+                  <h3 class="text-lg font-extrabold mt-1">
+                    🎙️ المحاكي الصوتي المباشر والممتحن الصارم (60/60 Pkt.)
+                  </h3>
+                </div>
+                ${
+                  this.state.simPartnerIsSpeaking
+                    ? `<div class="px-3 py-1.5 rounded-xl bg-emerald-500/25 border border-emerald-400 text-emerald-300 text-xs font-extrabold animate-pulse flex items-center gap-1.5" dir="rtl">
+                        <span>🗣️</span>
+                        <span>البارتنر كيهضر معاك دابا...</span>
+                      </div>`
+                    : `<span class="px-2.5 py-1 rounded-lg bg-black/30 text-[11px] font-mono-de text-amber-300" dir="ltr">
+                        Ronde #${this.state.simRoundNumber}
+                      </span>`
+                }
+              </div>
+
+              <!-- Large Hands-Free Voice Mode Button -->
+              <button
+                type="button"
+                data-action="toggle-hands-free-mode"
+                aria-label="وضع المحادثة الصوتية الحية Hands-Free Voice Mode"
+                class="w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold transition cursor-pointer flex items-center justify-center gap-2 shadow-lg ${
+                  this.state.simHandsFreeMode || this.state.simIsListening
+                    ? 'bg-gradient-to-r from-rose-600 to-amber-600 text-white border-2 border-white/60 animate-pulse'
+                    : 'bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white border border-emerald-400/50'
+                }"
+                dir="rtl"
+              >
+                <span class="text-base">${this.state.simIsListening ? '⏹️' : '🎙️'}</span>
+                <span>
+                  ${
+                    this.state.simIsListening
+                      ? 'وقف المحادثة الصوتية الحية وأرسل الجواب دابا'
+                      : '🎙️ وضع المحادثة الصوتية الحية (Hands-Free Voice Mode)'
+                  }
                 </span>
-                <h3 class="text-lg font-extrabold mt-1">
-                  🤖 المحاكي الصوتي المباشر (الممتحن والبارتنر بـ 3 شخصيات)
-                </h3>
-                <p class="text-xs opacity-80">
-                  جرب تلعب البينغ بونغ أو التخطيط أو مقابلة العمل مع الذكاء الاصطناعي، واختار شخصية البارتنر باش تدرب على جميع الحالات!
-                </p>
+              </button>
+
+              <!-- Voice & Auto-Speak Toolbar -->
+              <div class="p-3 rounded-xl studio-elevated space-y-2.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <!-- Language Toggle: DE vs Darija -->
+                  <div class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      data-action="set-sim-speech-lang"
+                      data-lang="de-DE"
+                      aria-label="التعرف الصوتي بالألمانية de-DE"
+                      class="px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        this.state.simSpeechLang === 'de-DE'
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-black/25 opacity-75'
+                      }"
+                      dir="rtl"
+                    >
+                      🇩🇪 الألمانية (de-DE)
+                    </button>
+                    <button
+                      type="button"
+                      data-action="set-sim-speech-lang"
+                      data-lang="ar-MA"
+                      aria-label="التعرف الصوتي بالدارجة المغربية ar-MA"
+                      class="px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        this.state.simSpeechLang === 'ar-MA'
+                          ? 'bg-amber-500 text-black'
+                          : 'bg-black/25 opacity-75'
+                      }"
+                      dir="rtl"
+                    >
+                      🇲🇦 الدارجة/العربية (ar-MA)
+                    </button>
+                  </div>
+
+                  <!-- Auto-Send After Silence Toggle -->
+                  <button
+                    type="button"
+                    data-action="toggle-sim-autosend"
+                    aria-label="إرسال تلقائي بعد السكوت"
+                    class="px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border ${
+                      this.state.simAutoSendAfterSilence
+                        ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                        : 'bg-black/20 border-white/10 opacity-70'
+                    }"
+                    dir="rtl"
+                  >
+                    ⚡ إرسال تلقائي بعد السكوت: ${this.state.simAutoSendAfterSilence ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <!-- Auto-Speak Partner Reply Toggle & Speed Selector -->
+                <div class="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/10">
+                  <button
+                    type="button"
+                    data-action="toggle-sim-autospeak"
+                    aria-label="نطق رد البارتنر تلقائياً"
+                    class="px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer border ${
+                      this.state.simAutoSpeakReply
+                        ? 'bg-indigo-500/25 border-indigo-400 text-indigo-200'
+                        : 'bg-black/20 border-white/10 opacity-70'
+                    }"
+                    dir="rtl"
+                  >
+                    🔊 نطق رد البارتنر تلقائياً (Auto-Speak Reply: ${this.state.simAutoSpeakReply ? 'ON' : 'OFF'})
+                  </button>
+
+                  <div class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      data-action="set-sim-speak-speed"
+                      data-speed="0.85"
+                      aria-label="سرعة نطق 0.85x بطيء وواضح"
+                      class="px-2 py-0.5 rounded text-[11px] font-bold cursor-pointer ${
+                        this.state.simSpeakSpeed === 0.85 ? 'bg-amber-500 text-black' : 'bg-black/25 opacity-75'
+                      }"
+                      dir="rtl"
+                    >
+                      🐢 0.85x بطيء وواضح
+                    </button>
+                    <button
+                      type="button"
+                      data-action="set-sim-speak-speed"
+                      data-speed="1"
+                      aria-label="سرعة نطق 1.0x طبيعي"
+                      class="px-2 py-0.5 rounded text-[11px] font-bold cursor-pointer ${
+                        this.state.simSpeakSpeed === 1.0 ? 'bg-emerald-600 text-white' : 'bg-black/25 opacity-75'
+                      }"
+                      dir="rtl"
+                    >
+                      ⚡ 1.0x طبيعي
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <!-- Simulator Mode & Persona Selectors -->
@@ -2130,10 +2308,10 @@ export class TelcMasterAppUI {
                   class="studio-elevated px-3 py-2 rounded-xl text-xs font-bold cursor-pointer"
                   dir="rtl"
                 >
-                  <option value="teil2" ${this.state.aiSimMode === 'teil2' ? 'selected' : ''}>🏓 Teil 2: البينغ بونغ</option>
-                  <option value="teil3" ${this.state.aiSimMode === 'teil3' ? 'selected' : ''}>🤝 Teil 3: التخطيط المشترك</option>
-                  <option value="teil1" ${this.state.aiSimMode === 'teil1' ? 'selected' : ''}>✈️ Teil 1: بين الويدان</option>
-                  <option value="interview" ${this.state.aiSimMode === 'interview' ? 'selected' : ''}>💼 مقابلة العمل (HR)</option>
+                  <option value="teil2" ${this.state.aiSimMode === 'teil2' ? 'selected' : ''}>🏓 Teil 2: البينغ بونغ (Ronde 1➔6)</option>
+                  <option value="teil3" ${this.state.aiSimMode === 'teil3' ? 'selected' : ''}>🤝 Teil 3: التخطيط المشترك (20 نقطة)</option>
+                  <option value="teil1" ${this.state.aiSimMode === 'teil1' ? 'selected' : ''}>✈️ Teil 1: التقديم + بين الويدان</option>
+                  <option value="interview" ${this.state.aiSimMode === 'interview' ? 'selected' : ''}>💼 مقابلة العمل (12 سؤال HR)</option>
                 </select>
 
                 <select
@@ -2148,36 +2326,223 @@ export class TelcMasterAppUI {
                 </select>
               </div>
 
+              <!-- Active Turn Target & Hint Box -->
+              ${(() => {
+                const turnCtx = this.buildCurrentSimulatorContext();
+                const expected = getExpectedSentenceForTurn(turnCtx);
+                return `
+                  <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <span class="text-xs font-extrabold text-amber-300" dir="rtl">${escapeHtml(expected.roundLabelDarija)}</span>
+                      <button
+                        type="button"
+                        data-action="show-sim-hint"
+                        aria-label="عطيني بداية الجملة Hint"
+                        class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold bg-amber-500/25 hover:bg-amber-500 text-amber-200 hover:text-black border border-amber-400/50 transition cursor-pointer"
+                        dir="rtl"
+                      >
+                        💡 عطيني بداية الجملة (Hint)
+                      </button>
+                    </div>
+                    ${
+                      this.state.simHintVisible
+                        ? `<div class="p-2.5 rounded-lg bg-black/40 border border-amber-400/40 space-y-1.5" dir="ltr">
+                            <div class="text-xs font-mono-de text-amber-300 font-bold">
+                              💡 Anfang (4 Wörter): „${escapeHtml(expected.hintFirst4Words)}“
+                            </div>
+                            <div class="text-xs opacity-90">
+                              🎯 Ganze Musterlösung: „${renderClauseWithGoldVerb(expected.targetSentenceDe)}“
+                            </div>
+                            <div class="flex flex-wrap gap-2 pt-1">
+                              <button
+                                type="button"
+                                data-action="speak-target-sentence-now"
+                                data-sentence="${escapeHtml(expected.targetSentenceDe)}"
+                                aria-label="هضر وقول هاد الجملة دابا"
+                                class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-600 text-white cursor-pointer"
+                                dir="rtl"
+                              >
+                                🎙️ هضر وقول هاد الجملة دابا
+                              </button>
+                              <button
+                                type="button"
+                                data-action="speak-text"
+                                data-text="${escapeHtml(expected.targetSentenceDe)}"
+                                aria-label="اسمع النطق الصحيح للجملة"
+                                class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                                dir="rtl"
+                              >
+                                🔊 اسمع النطق الصحيح
+                              </button>
+                            </div>
+                          </div>`
+                        : ''
+                    }
+                  </div>
+                `;
+              })()}
+
+              <!-- Teil 3 Live Scratchpad Auto-Check Tracker (Visible in Teil 3 mode) -->
+              ${
+                this.state.aiSimMode === 'teil3'
+                  ? `<div class="p-3 rounded-xl studio-elevated space-y-1.5">
+                      <div class="text-xs font-extrabold text-emerald-400" dir="rtl">
+                        📝 ورقة الوسخ التفاعلية (النقط لي هضرتي عليهم بصوتك كيتعلمو أوتوماتيكياً ✅):
+                      </div>
+                      <div class="flex flex-wrap gap-1" dir="ltr">
+                        ${TEIL3_20_UNIVERSAL_POINTS.map((pt) => {
+                          const done = this.state.teil3CheckedPointNumbers.includes(pt.number);
+                          return `<span class="px-2 py-0.5 rounded text-[10px] font-mono-de border ${
+                            done
+                              ? 'bg-emerald-500/25 border-emerald-400 text-emerald-300 font-bold'
+                              : 'bg-black/20 border-white/10 opacity-65'
+                          }">${done ? '✅' : '⬜'} #${pt.number} ${escapeHtml(pt.titleDe.split('(')[0].trim())}</span>`;
+                        }).join('')}
+                      </div>
+                    </div>`
+                  : ''
+              }
+
+              <!-- Live Audio Waveform Visualizer When Microphone is Active -->
+              ${
+                this.state.simIsListening
+                  ? `<div class="p-3.5 rounded-2xl bg-rose-950/60 border-2 border-rose-500 space-y-2 animate-pulse">
+                      <div class="flex items-center justify-between">
+                        <span class="text-xs font-extrabold text-rose-300" dir="rtl">
+                          🔴 كنسمعك دابا... هضر بالألمانية بكل راحة!
+                        </span>
+                        <span class="text-[11px] font-mono-de text-emerald-300" dir="ltr">
+                          MIC LIVE (${this.state.simSpeechLang})
+                        </span>
+                      </div>
+                      <!-- Waveform Bars -->
+                      <div class="flex items-end justify-center gap-1.5 h-7">
+                        <span class="w-1.5 h-3 bg-rose-400 rounded-full animate-bounce"></span>
+                        <span class="w-1.5 h-6 bg-emerald-400 rounded-full animate-pulse"></span>
+                        <span class="w-1.5 h-4 bg-amber-400 rounded-full animate-bounce"></span>
+                        <span class="w-1.5 h-7 bg-emerald-400 rounded-full animate-pulse"></span>
+                        <span class="w-1.5 h-5 bg-rose-400 rounded-full animate-bounce"></span>
+                        <span class="w-1.5 h-7 bg-indigo-400 rounded-full animate-pulse"></span>
+                        <span class="w-1.5 h-3 bg-emerald-400 rounded-full animate-bounce"></span>
+                      </div>
+                    </div>`
+                  : ''
+              }
+
               <!-- Chat History -->
-              <div class="space-y-3 max-h-80 overflow-y-auto p-3 rounded-xl bg-black/25 border border-white/10">
+              <div class="space-y-3 max-h-96 overflow-y-auto p-3 rounded-xl bg-black/25 border border-white/10">
                 ${this.state.aiConversation
-                  .map((msg) =>
+                  .map((msg, msgIdx) =>
                     msg.sender === 'mohammed'
                       ? `
-                        <div class="p-3 rounded-xl bg-emerald-600/25 border border-emerald-500/40 text-xs sm:text-sm" dir="ltr">
-                          <div class="text-[11px] font-bold text-emerald-300 mb-0.5">👤 Mohammed:</div>
-                          <div>${escapeHtml(msg.textDe)}</div>
+                        <div class="p-3 rounded-xl bg-emerald-600/25 border border-emerald-500/40 text-xs sm:text-sm space-y-1" dir="ltr">
+                          <div class="flex items-center justify-between">
+                            <span class="text-[11px] font-bold text-emerald-300">👤 Mohammed (Gesprochen / Geschrieben):</span>
+                            <button
+                              type="button"
+                              data-action="speak-sim-bubble"
+                              data-text="${escapeHtml(msg.textDe)}"
+                              aria-label="إعادة سماع جملة محمد ${msgIdx + 1}"
+                              class="px-2 py-0.5 rounded bg-black/30 text-[10px] font-bold text-emerald-200 cursor-pointer"
+                              dir="rtl"
+                            >
+                              🔊 اسمع صوتك
+                            </button>
+                          </div>
+                          <div>„${escapeHtml(msg.textDe)}“</div>
                         </div>
                       `
                       : `
-                        <div class="p-3 rounded-xl studio-elevated space-y-1.5 text-xs sm:text-sm">
-                          <div class="flex items-center justify-between">
-                            <span class="text-[11px] font-bold text-indigo-300" dir="ltr">🤖 Partner / Prüfer:</span>
-                            ${
-                              msg.score
-                                ? `<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold" dir="ltr">${msg.score}/60 Pkt.</span>`
-                                : ''
-                            }
+                        <div class="p-3.5 rounded-xl ${
+                          msg.isSanityRejected
+                            ? 'bg-rose-950/60 border-2 border-rose-500'
+                            : 'studio-elevated border border-indigo-500/30'
+                        } space-y-2 text-xs sm:text-sm">
+                          <div class="flex flex-wrap items-center justify-between gap-1.5">
+                            <span class="text-[11px] font-bold text-indigo-300" dir="ltr">🤖 TELC B2 Prüfer & Partner:</span>
+                            <div class="flex items-center gap-1.5">
+                              ${
+                                typeof msg.score === 'number'
+                                  ? msg.isSanityRejected || msg.score === 0
+                                    ? `<span class="px-2 py-0.5 rounded bg-rose-500/30 border border-rose-400 text-rose-200 text-[10px] font-extrabold" dir="rtl">0 / 60 Pkt. ❌ (جواب غير مقبول فـ الامتحان)</span>`
+                                    : `<span class="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-extrabold" dir="ltr">${msg.score}/60 Pkt. • Niveau ${msg.cefrLevel || 'B2'}</span>`
+                                  : ''
+                              }
+                              <button
+                                type="button"
+                                data-action="speak-sim-bubble"
+                                data-text="${escapeHtml(msg.textDe)}"
+                                aria-label="عاود سمع رد البارتنر ${msgIdx + 1}"
+                                class="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold cursor-pointer"
+                                dir="rtl"
+                              >
+                                🔊 عاود سمع رد البارتنر
+                              </button>
+                            </div>
                           </div>
-                          <div dir="ltr">„${escapeHtml(msg.textDe)}“</div>
+
+                          <div class="font-medium leading-relaxed" dir="ltr">„${escapeHtml(msg.textDe)}“</div>
+
                           ${
                             msg.darijaTip
-                              ? `<div class="text-xs text-amber-300 pt-1 border-t border-white/10" dir="rtl">💡 ${escapeHtml(msg.darijaTip)}</div>`
+                              ? `<div class="text-xs ${
+                                  msg.isSanityRejected ? 'text-rose-200 font-bold' : 'text-amber-300'
+                                } pt-1.5 border-t border-white/10 leading-relaxed" dir="rtl">
+                                  ${escapeHtml(msg.darijaTip)}
+                                </div>`
                               : ''
                           }
+
                           ${
-                            msg.sauerstoff
-                              ? `<div class="text-[11px] text-emerald-300" dir="ltr">🫁 Sauerstoff-Tipp: „${escapeHtml(msg.sauerstoff)}“</div>`
+                            msg.correctedSentenceDe
+                              ? `<div class="p-2.5 rounded-lg bg-black/35 border border-emerald-500/30 space-y-1.5" dir="ltr">
+                                  <div class="text-[11px] font-bold text-emerald-400" dir="rtl">
+                                    🎯 الجملة الألمانية المطلوبة فهاد الجولة (Verb am Ende):
+                                  </div>
+                                  <div class="text-xs leading-relaxed">
+                                    „${renderClauseWithGoldVerb(msg.correctedSentenceDe)}“
+                                  </div>
+                                  <div class="flex flex-wrap items-center gap-2 pt-1">
+                                    <button
+                                      type="button"
+                                      data-action="speak-target-sentence-now"
+                                      data-sentence="${escapeHtml(msg.correctedSentenceDe)}"
+                                      aria-label="هضر وقول هاد الجملة دابا"
+                                      class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
+                                      dir="rtl"
+                                    >
+                                      🎙️ هضر وقول هاد الجملة دابا
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-action="speak-text"
+                                      data-text="${escapeHtml(msg.correctedSentenceDe)}"
+                                      aria-label="اسمع النطق الصحيح"
+                                      class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600/80 hover:bg-indigo-500 text-white cursor-pointer"
+                                      dir="rtl"
+                                    >
+                                      🔊 اسمع النطق الصحيح
+                                    </button>
+                                  </div>
+                                </div>`
+                              : ''
+                          }
+
+                          ${
+                            msg.scorecard
+                              ? `<div class="p-3 rounded-xl bg-emerald-950/60 border-2 border-emerald-400 space-y-2" dir="ltr">
+                                  <div class="text-xs font-extrabold text-emerald-300 flex items-center justify-between">
+                                    <span>🏆 Offizieller TELC B2 Mündlich Scorecard</span>
+                                    <span>${msg.scorecard.totalOutOf60} / 60 Pkt. (${msg.scorecard.passed ? 'BESTANDEN ✅' : 'NICHT BESTANDEN ❌'})</span>
+                                  </div>
+                                  <div class="grid grid-cols-2 gap-1.5 text-[11px]">
+                                    <div class="p-1.5 rounded bg-black/30">Ausdrucksfähigkeit: <strong>${msg.scorecard.ausdruck}/15</strong></div>
+                                    <div class="p-1.5 rounded bg-black/30">Aufgabenbewältigung: <strong>${msg.scorecard.aufgabe}/15</strong></div>
+                                    <div class="p-1.5 rounded bg-black/30">Formale Korrektheit: <strong>${msg.scorecard.korrektheit}/15</strong></div>
+                                    <div class="p-1.5 rounded bg-black/30">Aussprache & Intonation: <strong>${msg.scorecard.aussprache}/15</strong></div>
+                                  </div>
+                                  <div class="text-xs text-amber-300 font-bold" dir="rtl">${escapeHtml(msg.scorecard.summaryDarija)}</div>
+                                </div>`
                               : ''
                           }
                         </div>
@@ -2186,17 +2551,60 @@ export class TelcMasterAppUI {
                   .join('')}
               </div>
 
-              <!-- Chat Input -->
-              <div class="flex gap-2">
+              <!-- 3 Convenient Speaking Controls Above Input -->
+              <div class="flex flex-wrap items-center gap-1.5" dir="rtl">
+                <button
+                  type="button"
+                  data-action="send-ai-chat"
+                  aria-label="إرسال الجواب الصوتي"
+                  class="flex-1 px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold bg-emerald-600/30 hover:bg-emerald-600 text-emerald-200 hover:text-white border border-emerald-500/40 transition cursor-pointer"
+                >
+                  ✅ إرسال الجواب الصوتي
+                </button>
+                <button
+                  type="button"
+                  data-action="restart-sim-mic"
+                  aria-label="عاود التسجيل"
+                  class="px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold studio-elevated hover:border-amber-400 cursor-pointer"
+                >
+                  🔄 عاود التسجيل
+                </button>
+                <button
+                  type="button"
+                  data-action="show-sim-hint"
+                  aria-label="عطيني بداية الجملة Hint"
+                  class="px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500 hover:text-black transition cursor-pointer"
+                >
+                  💡 عطيني بداية الجملة (Hint)
+                </button>
+              </div>
+
+              <!-- Chat Input + Glowing Microphone Button ("🎙️ هضر بصوتك") -->
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  data-action="toggle-sim-mic"
+                  aria-label="${this.state.simIsListening ? 'وقف وأرسل' : 'هضر بصوتك'}"
+                  class="px-3.5 py-2.5 rounded-xl text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow-lg transition ${
+                    this.state.simIsListening
+                      ? 'bg-rose-600 text-white ring-2 ring-rose-400 animate-pulse'
+                      : 'bg-amber-500 hover:bg-amber-400 text-black'
+                  }"
+                  dir="rtl"
+                >
+                  <span>${this.state.simIsListening ? '⏹️ وقف وأرسل' : '🎙️ هضر بصوتك'}</span>
+                </button>
+
                 <input
                   type="text"
                   data-action="ai-chat-input"
                   value="${escapeHtml(this.state.aiUserMessage)}"
-                  placeholder="كتب جملتك بالألمانية هنا (مثلا: Der Text befasst sich mit...)..."
+                  placeholder="هضر فـ المايك 🎙️ أو كتب جملتك بالألمانية هنا (مثلا: Der Text befasst sich mit...)..."
                   aria-label="رسالتك للممتحن الذكي"
                   class="studio-elevated flex-1 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm"
                   dir="ltr"
                 />
+
                 <button
                   type="button"
                   data-action="send-ai-chat"
@@ -3033,6 +3441,85 @@ export class TelcMasterAppUI {
           this.render();
           break;
         }
+        case 'toggle-hands-free-mode': {
+          this.state.simHandsFreeMode = !this.state.simHandsFreeMode;
+          if (this.state.simHandsFreeMode) {
+            this.startSimulatorMic();
+          } else {
+            this.stopSimulatorMicAndOptionallySend(true);
+          }
+          break;
+        }
+        case 'toggle-sim-mic': {
+          if (this.state.simIsListening) {
+            this.stopSimulatorMicAndOptionallySend(true);
+          } else {
+            this.startSimulatorMic();
+          }
+          break;
+        }
+        case 'restart-sim-mic': {
+          this.stopSimulatorMicAndOptionallySend(false);
+          this.state.aiUserMessage = '';
+          this.startSimulatorMic();
+          break;
+        }
+        case 'show-sim-hint': {
+          this.state.simHintVisible = !this.state.simHintVisible;
+          if (this.state.simHintVisible) {
+            const expected = getExpectedSentenceForTurn(this.buildCurrentSimulatorContext());
+            const firstFour = expected.hintFirst4Words.replace(' ...', '');
+            if (!this.state.aiUserMessage.trim()) {
+              this.state.aiUserMessage = `${firstFour} `;
+            }
+          }
+          this.render();
+          break;
+        }
+        case 'set-sim-speech-lang': {
+          const lang = target.dataset.lang as 'de-DE' | 'ar-MA';
+          if (lang === 'de-DE' || lang === 'ar-MA') {
+            this.state.simSpeechLang = lang;
+            if (this.state.simIsListening) {
+              this.stopSimulatorMicAndOptionallySend(false);
+              this.startSimulatorMic();
+            } else {
+              this.render();
+            }
+          }
+          break;
+        }
+        case 'toggle-sim-autosend': {
+          this.state.simAutoSendAfterSilence = !this.state.simAutoSendAfterSilence;
+          this.render();
+          break;
+        }
+        case 'toggle-sim-autospeak': {
+          this.state.simAutoSpeakReply = !this.state.simAutoSpeakReply;
+          this.render();
+          break;
+        }
+        case 'set-sim-speak-speed': {
+          const sp = Number(target.dataset.speed);
+          this.state.simSpeakSpeed = sp === 0.85 ? 0.85 : 1.0;
+          this.render();
+          break;
+        }
+        case 'speak-sim-bubble': {
+          const txt = target.dataset.text || '';
+          this.speakPartnerReply(txt, true);
+          break;
+        }
+        case 'speak-target-sentence-now': {
+          const sentence = target.dataset.sentence || '';
+          if (sentence) {
+            this.state.aiUserMessage = sentence;
+            this.state.simHintVisible = true;
+            this.speakPartnerReply(sentence, true);
+            this.render();
+          }
+          break;
+        }
         case 'send-ai-chat': {
           void this.handleSendAiChat();
           break;
@@ -3091,8 +3578,8 @@ export class TelcMasterAppUI {
         this.state.selectedTeil3Id = id;
         this.render();
       } else if (action === 'change-ai-sim-mode') {
-        this.state.aiSimMode = (target as HTMLSelectElement).value as 'teil1' | 'teil2' | 'teil3' | 'interview';
-        this.render();
+        const nextMode = (target as HTMLSelectElement).value as 'teil1' | 'teil2' | 'teil3' | 'interview';
+        this.switchSimulatorMode(nextMode);
       } else if (action === 'change-ai-persona') {
         this.state.aiPersona = (target as HTMLSelectElement).value as PartnerPersona;
         this.render();
@@ -3121,6 +3608,155 @@ export class TelcMasterAppUI {
         this.state.careerSearchQuery = target.value;
       }
     });
+  }
+
+  private buildCurrentSimulatorContext(userMsg = ''): SimulatorTurnContext {
+    const exam = this.getCurrentExam();
+    const teil3Topic = this.getCurrentTeil3Topic();
+    const interviewIdx = ((this.state.simRoundNumber - 1) % WIRTSCHAFT_JOB_INTERVIEW_12_QAS.length + WIRTSCHAFT_JOB_INTERVIEW_12_QAS.length) % WIRTSCHAFT_JOB_INTERVIEW_12_QAS.length;
+    const currentQa = WIRTSCHAFT_JOB_INTERVIEW_12_QAS[interviewIdx];
+    const nextQa = WIRTSCHAFT_JOB_INTERVIEW_12_QAS[(interviewIdx + 1) % WIRTSCHAFT_JOB_INTERVIEW_12_QAS.length];
+
+    return {
+      mode: this.state.aiSimMode,
+      roundNumber: this.state.simRoundNumber,
+      userMessage: userMsg,
+      teil2Exam: {
+        id: exam.id,
+        titleDe: exam.titleDe,
+        titleDarija: exam.titleDarija,
+        slot1Theme: exam.slot1Theme,
+        slot2Point1: exam.slot2Point1,
+        slot3Point2: exam.slot3Point2,
+        slot4Advantage: exam.slot4Advantage,
+        slot5Disadvantage: exam.slot5Disadvantage,
+        slot6Morocco: exam.slot6Morocco
+      },
+      teil3Topic,
+      teil3AllPoints: TEIL3_20_UNIVERSAL_POINTS,
+      teil3VisitedPoints: this.state.teil3CheckedPointNumbers,
+      interviewQuestion: currentQa,
+      nextInterviewQuestion: nextQa,
+      previousTurnScores: this.state.simTurnScores
+    };
+  }
+
+  private switchSimulatorMode(mode: 'teil1' | 'teil2' | 'teil3' | 'interview'): void {
+    this.stopSimulatorMicAndOptionallySend(false);
+    this.state.aiSimMode = mode;
+    this.state.simRoundNumber = 1;
+    this.state.simTurnScores = [];
+    this.state.simHintVisible = false;
+
+    const ctx = this.buildCurrentSimulatorContext();
+    const expected = getExpectedSentenceForTurn(ctx);
+
+    let openingDe = '';
+    let openingDarija = '';
+
+    if (mode === 'teil2') {
+      const ex = this.getCurrentExam();
+      openingDe = `Hallo Mohammed! Lass uns mit Teil 2 (Thema #${ex.id}: ${ex.titleDe}) starten. Bitte sprich deine Ronde 1 (Einleitung + Fikra 1 aus dem Text)!`;
+      openingDarija = `🏓 برك على "🎙️ هضر بصوتك" وقول الجولة 1 ديال موضوع „${ex.titleDe}“!`;
+    } else if (mode === 'teil1') {
+      openingDe =
+        'Guten Tag, Mohammed! Willkommen zur mündlichen Prüfung Teil 1. Bitte stelle dich zuerst kurz vor (Name, Alter, Herkunft aus Fès, Abitur & Bachelor in Wirtschaft).';
+      openingDarija = '✈️ برك على المايك وقدم راسك بالألمانية (محمد الجبوري، 22 سنة، من فاس، إجازة اقتصاد)!';
+    } else if (mode === 'teil3') {
+      const t3 = this.getCurrentTeil3Topic();
+      openingDe = `Hallo Mohammed! In Teil 3 planen wir gemeinsam: „${t3.titleDe}“. Beginne bitte mit der Einleitung (Dkhla) und deinem ersten Vorschlag!`;
+      openingDarija = `🤝 ابدأ التخطيط لموضوع „${t3.titleDarija}“! أي نقطة من الـ 20 هضرتي عليها غادي تتعلم أوتوماتيكياً فـ ورقة الوسخ ✅`;
+    } else {
+      const firstQa = WIRTSCHAFT_JOB_INTERVIEW_12_QAS[0];
+      openingDe = `Guten Tag, Herr El Jebouri! Willkommen zum Vorstellungsgespräch im Bereich Wirtschaft. Erste Frage: ${firstQa.questionDe}`;
+      openingDarija = `💼 سؤال الموارد البشرية #1: ${firstQa.questionDarija} — جاوب بصوتك بالألمانية!`;
+    }
+
+    this.state.aiConversation = [
+      {
+        sender: 'partner',
+        textDe: openingDe,
+        darijaTip: openingDarija,
+        correctedSentenceDe: expected.targetSentenceDe
+      }
+    ];
+    this.speakPartnerReply(openingDe, false);
+    this.render();
+  }
+
+  private speakPartnerReply(textDe: string, forceSpeak = false): void {
+    if (!forceSpeak && !this.state.simAutoSpeakReply) return;
+    speakGermanText(textDe, this.state.simSpeakSpeed, (isSpeaking) => {
+      if (this.state.simPartnerIsSpeaking !== isSpeaking) {
+        this.state.simPartnerIsSpeaking = isSpeaking;
+        this.render();
+      }
+    });
+  }
+
+  private startSimulatorMic(): void {
+    this.simSpeechRec?.stop();
+    if (this.simSilenceTimer) {
+      window.clearTimeout(this.simSilenceTimer);
+      this.simSilenceTimer = null;
+    }
+
+    this.state.simIsListening = true;
+    this.render();
+
+    this.simSpeechRec = startBrowserSpeechRecognition(
+      (transcript) => {
+        this.state.aiUserMessage = transcript;
+        // Update input box immediately in DOM without losing focus
+        const inputEl = this.root.querySelector<HTMLInputElement>('[data-action="ai-chat-input"]');
+        if (inputEl) {
+          inputEl.value = transcript;
+        }
+
+        if (this.state.simAutoSendAfterSilence) {
+          if (this.simSilenceTimer) window.clearTimeout(this.simSilenceTimer);
+          this.simSilenceTimer = window.setTimeout(() => {
+            if (this.state.simIsListening && this.state.aiUserMessage.trim()) {
+              this.stopSimulatorMicAndOptionallySend(true);
+            }
+          }, 2500);
+        }
+      },
+      (errMsg) => {
+        this.state.simIsListening = false;
+        this.state.simHandsFreeMode = false;
+        this.state.aiConversation.push({
+          sender: 'partner',
+          textDe: 'Hinweis zum Mikrofon: Bitte prüfe die Mikrofon-Berechtigung im Browser oder nutze das Textfeld.',
+          darijaTip: errMsg
+        });
+        this.render();
+      },
+      () => {
+        this.state.simIsListening = false;
+        this.render();
+      },
+      {
+        lang: this.state.simSpeechLang,
+        continuous: true
+      }
+    );
+  }
+
+  private stopSimulatorMicAndOptionallySend(shouldSend: boolean): void {
+    if (this.simSilenceTimer) {
+      window.clearTimeout(this.simSilenceTimer);
+      this.simSilenceTimer = null;
+    }
+    this.simSpeechRec?.stop();
+    this.simSpeechRec = null;
+    this.state.simIsListening = false;
+    this.state.simHandsFreeMode = false;
+    this.render();
+
+    if (shouldSend && this.state.aiUserMessage.trim()) {
+      void this.handleSendAiChat();
+    }
   }
 
   private selectTeil2Exam(id: number): void {
@@ -3154,7 +3790,8 @@ export class TelcMasterAppUI {
     this.activeSpeechRec = startBrowserSpeechRecognition(
       (transcript) => {
         this.state.voiceTranscript = transcript;
-        this.render();
+        const inputEl = this.root.querySelector<HTMLInputElement>('[data-action="voice-text-input"]');
+        if (inputEl) inputEl.value = transcript;
       },
       (errMsg) => {
         this.state.voiceIsRecording = false;
@@ -3169,7 +3806,8 @@ export class TelcMasterAppUI {
       () => {
         this.state.voiceIsRecording = false;
         this.render();
-      }
+      },
+      { lang: 'de-DE', continuous: false }
     );
   }
 
@@ -3178,7 +3816,7 @@ export class TelcMasterAppUI {
     const rounds = build6RoundsForExam(exam);
     const activeRoundObj = rounds.find((r) => r.roundNumber === this.state.voiceActiveRound) || rounds[0];
     const targetClause = activeRoundObj.slot2Content || activeRoundObj.slotContent;
-    const userTxt = this.state.voiceTranscript.trim() || targetClause;
+    const userTxt = this.state.voiceTranscript.trim();
 
     const localEval = evaluateSlotSimilarity(userTxt, targetClause);
     const grade = await fastGradeSlotSubmission({
@@ -3189,13 +3827,17 @@ export class TelcMasterAppUI {
     });
 
     this.state.voiceFeedback = {
-      score: Math.max(localEval.similarityPercent, grade.score),
-      verbOk: grade.verbAtEndCorrect || localEval.verbAtEnd,
+      score: grade.score,
+      verbOk: grade.verbAtEndCorrect && localEval.verbAtEnd,
       corrected: grade.correctedGerman || targetClause,
       darija: grade.darijaFeedback
     };
-    sfx.playVerbGoldChime();
-    this.addXpAndSync(25);
+    if (grade.score > 0) {
+      sfx.playVerbGoldChime();
+      this.addXpAndSync(25);
+    } else {
+      sfx.playErrorBuzz();
+    }
     this.render();
   }
 
@@ -3258,6 +3900,12 @@ export class TelcMasterAppUI {
     const msg = this.state.aiUserMessage.trim();
     if (!msg || this.state.aiLoading) return;
 
+    if (this.state.simIsListening) {
+      this.simSpeechRec?.stop();
+      this.simSpeechRec = null;
+      this.state.simIsListening = false;
+    }
+
     this.state.aiConversation.push({ sender: 'mohammed', textDe: msg });
     this.state.aiUserMessage = '';
     this.state.aiLoading = true;
@@ -3272,24 +3920,50 @@ export class TelcMasterAppUI {
         ? 'Reise nach Bin el Ouidane'
         : 'Vorstellungsgespräch Bachelor Wirtschaft';
 
-    const reply = await chatWithAiExaminer({
-      mode: this.state.aiSimMode,
+    const turnCtx = this.buildCurrentSimulatorContext(msg);
+    const result = await evaluateTurnWithStrictExaminer({
+      ...turnCtx,
       persona: this.state.aiPersona,
-      topicTitle,
-      userMessage: msg
+      topicTitle
     });
+
+    if (result.isSanityRejected) {
+      sfx.playErrorBuzz();
+    } else {
+      sfx.playPingPongHit();
+      this.state.simTurnScores.push(result.scoreOutOf60);
+      this.state.simRoundNumber = result.nextRoundNumber;
+      this.addXpAndSync(25);
+    }
+
+    // If Teil 3 planning point was detected, check it off on the Scratchpad!
+    if (result.detectedTeil3PointNumber) {
+      if (!this.state.teil3CheckedPointNumbers.includes(result.detectedTeil3PointNumber)) {
+        this.state.teil3CheckedPointNumbers.push(result.detectedTeil3PointNumber);
+      }
+      const ptObj = TEIL3_20_UNIVERSAL_POINTS.find((p) => p.number === result.detectedTeil3PointNumber);
+      if (ptObj && !this.state.progress.scratchpadNotes.includes(`✅ #${ptObj.number}`)) {
+        this.state.progress.scratchpadNotes = `${this.state.progress.scratchpadNotes}\n✅ #${ptObj.number} ${ptObj.titleDe}: besprochen`.trim();
+        void syncProgressToFirestore(this.state.progress);
+      }
+    }
 
     this.state.aiConversation.push({
       sender: 'partner',
-      textDe: reply.partnerGermanReply,
-      darijaTip: reply.darijaCoachingTip,
-      correction: reply.grammarCorrection,
-      score: reply.estimatedScoreOutOf60,
-      sauerstoff: reply.sauerstoffHintIfNeeded
+      textDe: result.partnerGermanReply,
+      darijaTip: result.pronunciationAndGrammarFeedbackDarija,
+      score: result.scoreOutOf60,
+      cefrLevel: result.cefrLevel,
+      isSanityRejected: result.isSanityRejected,
+      correctedSentenceDe: result.isSanityRejected
+        ? result.correctedGermanSentence
+        : result.targetSentenceForCurrentOrNextTurn,
+      sauerstoff: result.sauerstoffHintIfNeeded,
+      scorecard: result.completedScorecard
     });
+
     this.state.aiLoading = false;
-    speakGermanText(reply.partnerGermanReply, 1.0);
-    this.addXpAndSync(20);
+    this.speakPartnerReply(result.partnerGermanReply, false);
     this.render();
   }
 
