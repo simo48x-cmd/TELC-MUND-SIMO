@@ -9,7 +9,10 @@ import {
   analyzeGermanInputSanity,
   evaluateSimulatorTurnDeterministically,
   detectTeil3PlanningPoint,
-  extractFirstFourWordsHint
+  extractFirstFourWordsHint,
+  getVoiceCallOpeningGreeting,
+  getTeleprompterWhisperLevels,
+  buildPostCallDiagnosticReport
 } from './pingPongLogic';
 
 test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-clause', () => {
@@ -149,4 +152,53 @@ test('detectTeil3PlanningPoint detects planning points from spoken German and ex
     extractFirstFourWordsHint('Der Text befasst sich mit dem Thema Fast Food.'),
     'Der Text befasst sich ...'
   );
+});
+
+test('getVoiceCallOpeningGreeting, getTeleprompterWhisperLevels, and buildPostCallDiagnosticReport work accurately', () => {
+  const ctx = {
+    mode: 'teil2' as const,
+    roundNumber: 1,
+    userMessage: '',
+    teil2Exam: {
+      id: 1,
+      titleDe: 'Fast Food kann süchtig machen',
+      titleDarija: 'الأكل السريع',
+      slot1Theme: 'Fast Food',
+      slot2Point1: 'fett- und zuckerreiches Essen das Gehirn ähnlich wie Drogen stimulieren kann',
+      slot3Point2: 'US-Forscher in Experimenten gezeigt haben, wie stark Fast Food wirkt',
+      slot4Advantage: 'Fast Food schnell fertig ist und Zeit spart',
+      slot5Disadvantage: 'dieses Essen zu Krankheiten führt',
+      slot6Morocco: 'junge Leute in Fès gerne Tacos essen',
+      slot2Darija: 'الماكلة العامرة بالدهون والسكر كتدير الإدمان'
+    }
+  };
+
+  const greeting = getVoiceCallOpeningGreeting(ctx);
+  assert.ok(greeting.includes('Fast Food kann süchtig machen'));
+  assert.ok(greeting.includes('Ronde 1'));
+
+  const whisper = getTeleprompterWhisperLevels(ctx);
+  assert.ok(whisper.level1Darija.includes('الماكلة العامرة بالدهون والسكر'));
+  assert.ok(whisper.level2StarterDe.includes('Der Text befasst sich mit dem Thema'));
+  assert.ok(whisper.level3FullDe.includes('stimulieren kann'));
+  assert.ok(whisper.rescueInterruptPhraseDe.includes('Entschuldigung'));
+
+  const report = buildPostCallDiagnosticReport({
+    durationSeconds: 65,
+    turns: [
+      {
+        userSaidDe:
+          'Der Text befasst sich mit dem Thema Fast Food. Zuerst wird beschrieben, dass fett- und zuckerreiches Essen das Gehirn stimulieren kann.',
+        targetSentenceDe: whisper.level3FullDe,
+        scoreOutOf60: 54,
+        cefrLevel: 'B2',
+        darijaCritique: 'ممتاز!',
+        verbAtEndCorrect: true
+      }
+    ]
+  });
+  assert.equal(report.durationFormatted, '01:05');
+  assert.ok(report.totalOutOf60 >= 50);
+  assert.equal(report.passed, true);
+  assert.equal(report.turnReviews.length, 1);
 });

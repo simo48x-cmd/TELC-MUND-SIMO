@@ -111,15 +111,80 @@ class SoundEffectsManager {
       osc.stop(start + 0.46);
     });
   }
+
+  public playPhoneConnectRing(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    // Dual-tone European phone connect ring (425 Hz + 640 Hz) over ~0.9s
+    const bursts = [
+      { offset: 0.0, duration: 0.32, freqs: [425, 640] },
+      { offset: 0.45, duration: 0.38, freqs: [523.25, 783.99] }
+    ];
+    bursts.forEach((b) => {
+      b.freqs.forEach((f) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        const start = ctx.currentTime + b.offset;
+        osc.frequency.setValueAtTime(f, start);
+        gain.gain.setValueAtTime(0.09, start);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + b.duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + b.duration + 0.02);
+      });
+    });
+  }
+
+  public playListeningReadyChime(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const notes = [659.25, 880]; // E5 -> A5 gentle "mic open" chime
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const start = ctx.currentTime + idx * 0.07;
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.1, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.17);
+    });
+  }
 }
 
 export const sfx = new SoundEffectsManager();
+
+let activeSpeechFallbackTimer: number | null = null;
+
+export function stopGermanSpeech(): void {
+  if (activeSpeechFallbackTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(activeSpeechFallbackTimer);
+    activeSpeechFallbackTimer = null;
+  }
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export function speakGermanText(
   text: string,
   rate: 0.8 | 0.85 | 1.0 = 1.0,
   onSpeechStateChange?: (isSpeaking: boolean) => void
 ): void {
+  if (activeSpeechFallbackTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(activeSpeechFallbackTimer);
+    activeSpeechFallbackTimer = null;
+  }
+
   if (sfx.muted || typeof window === 'undefined') {
     onSpeechStateChange?.(false);
     return;
@@ -129,6 +194,17 @@ export function speakGermanText(
     onSpeechStateChange?.(false);
     return;
   }
+
+  let finished = false;
+  const finishOnce = () => {
+    if (finished) return;
+    finished = true;
+    if (activeSpeechFallbackTimer !== null) {
+      window.clearTimeout(activeSpeechFallbackTimer);
+      activeSpeechFallbackTimer = null;
+    }
+    onSpeechStateChange?.(false);
+  };
 
   if ('speechSynthesis' in window) {
     try {
@@ -146,20 +222,26 @@ export function speakGermanText(
         onSpeechStateChange?.(true);
       };
       utterance.onend = () => {
-        onSpeechStateChange?.(false);
+        finishOnce();
       };
       utterance.onerror = () => {
-        onSpeechStateChange?.(false);
+        finishOnce();
       };
       onSpeechStateChange?.(true);
       window.speechSynthesis.speak(utterance);
+
+      // Reliable fallback timer in case browser speechSynthesis doesn't fire onend
+      const estimatedMs = Math.min(7500, Math.max(1200, Math.round((cleanText.length * 42) / rate)));
+      activeSpeechFallbackTimer = window.setTimeout(() => {
+        finishOnce();
+      }, estimatedMs);
       return;
     } catch (e) {
       console.warn('Browser speechSynthesis fallback error:', e);
-      onSpeechStateChange?.(false);
+      finishOnce();
     }
   } else {
-    onSpeechStateChange?.(false);
+    finishOnce();
   }
 }
 

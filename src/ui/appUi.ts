@@ -45,11 +45,16 @@ import {
   transformDirectToIndirectQuestion,
   evaluateSlotSimilarity,
   getExpectedSentenceForTurn,
+  getVoiceCallOpeningGreeting,
+  getTeleprompterWhisperLevels,
+  buildPostCallDiagnosticReport,
+  PostCallDiagnosticReport,
   SimulatorTurnContext
 } from '../utils/pingPongLogic';
 import {
   sfx,
   speakGermanText,
+  stopGermanSpeech,
   speakGermanGeminiTts,
   startBrowserSpeechRecognition,
   fastGradeSlotSubmission,
@@ -110,6 +115,7 @@ interface AppUiRuntimeState {
   // Career & AI Simulator state
   selectedInterviewId: number;
   showB2InterviewVersion: Record<number, boolean>;
+  simSubMode: 'chat' | 'call';
   aiSimMode: 'teil1' | 'teil2' | 'teil3' | 'interview';
   aiPersona: PartnerPersona;
   aiUserMessage: string;
@@ -144,6 +150,27 @@ interface AppUiRuntimeState {
       summaryDarija: string;
     };
   }>;
+
+  // Live AI Voice Call Studio state
+  callState: 'IDLE' | 'AI_SPEAKING' | 'USER_LISTENING' | 'EVALUATING' | 'PAUSED' | 'ENDED';
+  callAvatarRole: 'pruefer_markus' | 'partnerin_lisa' | 'hr_thomas';
+  callDurationSeconds: number;
+  callMicMuted: boolean;
+  callLiveCaptionDe: string;
+  callLastAiQuestionDe: string;
+  callInstantToast: { badgeText: string; isPositive: boolean; detailDarija: string } | null;
+  callTeleprompterOpen: boolean;
+  callTeleprompterLevel: 1 | 2 | 3;
+  callTurnsLog: Array<{
+    userSaidDe: string;
+    targetSentenceDe: string;
+    scoreOutOf60: number;
+    cefrLevel: string;
+    darijaCritique: string;
+    verbAtEndCorrect: boolean;
+  }>;
+  callReport: PostCallDiagnosticReport | null;
+
   careerSearchQuery: string;
   careerSearchResult: { text: string; sources: Array<{ uri: string; title: string }> } | null;
   careerSearchLoading: boolean;
@@ -178,6 +205,9 @@ export class TelcMasterAppUI {
   private activeSpeechRec: { stop: () => void } | null = null;
   private simSpeechRec: { stop: () => void } | null = null;
   private simSilenceTimer: number | null = null;
+  private callTimerInterval: number | null = null;
+  private callSpeechRec: { stop: () => void } | null = null;
+  private callSilenceTimer: number | null = null;
   private cloudUnsub: (() => void) | null = null;
 
   constructor(root: HTMLElement, spatialScene: TelcSpatialScene | null = null) {
@@ -236,6 +266,7 @@ export class TelcMasterAppUI {
 
       selectedInterviewId: 1,
       showB2InterviewVersion: { 1: true, 2: true, 3: true },
+      simSubMode: 'chat',
       aiSimMode: 'teil2',
       aiPersona: 'friendly',
       aiUserMessage: '',
@@ -258,6 +289,19 @@ export class TelcMasterAppUI {
           correctedSentenceDe: `Der Text befasst sich mit dem Thema „${exam1.slot1Theme}“. Zuerst wird beschrieben, dass ${exam1.slot2Point1}. Welche Informationen hast du noch gefunden?`
         }
       ],
+
+      callState: 'IDLE',
+      callAvatarRole: 'partnerin_lisa',
+      callDurationSeconds: 0,
+      callMicMuted: false,
+      callLiveCaptionDe: '',
+      callLastAiQuestionDe: `Hallo Mohammed! Wir diskutieren heute über das Thema „${exam1.titleDe}“. Bitte beginne mit deiner Einleitung in Ronde 1!`,
+      callInstantToast: null,
+      callTeleprompterOpen: true,
+      callTeleprompterLevel: 1,
+      callTurnsLog: [],
+      callReport: null,
+
       careerSearchQuery: 'Bachelor Wirtschaft Berufseinstieg Controlling Gehalt Deutschland',
       careerSearchResult: null,
       careerSearchLoading: false,
@@ -2157,7 +2201,7 @@ export class TelcMasterAppUI {
             </div>
           </div>
 
-          <!-- Right 5 Cols: Live AI Examiner & Partner Simulator + Hands-Free Voice + Search Grounding -->
+          <!-- Right 5 Cols: Live AI Examiner & Partner Simulator + Live Voice Call Studio + Search Grounding -->
           <div class="lg:col-span-5 space-y-4">
             <div class="studio-card rounded-2xl p-5 space-y-4 lg:sticky lg:top-24 border-2 border-indigo-500/40">
               <!-- Simulator Header & Speaking Avatar Indicator -->
@@ -2171,7 +2215,7 @@ export class TelcMasterAppUI {
                   </h3>
                 </div>
                 ${
-                  this.state.simPartnerIsSpeaking
+                  this.state.simPartnerIsSpeaking || this.state.callState === 'AI_SPEAKING'
                     ? `<div class="px-3 py-1.5 rounded-xl bg-emerald-500/25 border border-emerald-400 text-emerald-300 text-xs font-extrabold animate-pulse flex items-center gap-1.5" dir="rtl">
                         <span>🗣️</span>
                         <span>البارتنر كيهضر معاك دابا...</span>
@@ -2182,6 +2226,59 @@ export class TelcMasterAppUI {
                 }
               </div>
 
+              <!-- PROMINENT TOP TOGGLE: [💬 وضع الشات والتدريب] | [📞 اتصال صوتي مباشر (Live Voice Call)] + Green Call Button -->
+              <div class="space-y-2" dir="rtl">
+                <div class="grid grid-cols-2 gap-2 p-1.5 rounded-2xl bg-black/35 border border-white/15">
+                  <button
+                    type="button"
+                    data-action="set-sim-submode"
+                    data-submode="chat"
+                    aria-label="وضع الشات والتدريب"
+                    class="py-2.5 px-3 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                      this.state.simSubMode === 'chat'
+                        ? 'bg-indigo-600 text-white shadow-lg'
+                        : 'hover:bg-white/5 opacity-80'
+                    }"
+                  >
+                    <span>💬</span>
+                    <span>وضع الشات والتدريب</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-action="set-sim-submode"
+                    data-submode="call"
+                    aria-label="اتصال صوتي مباشر Live Voice Call"
+                    class="py-2.5 px-3 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                      this.state.simSubMode === 'call'
+                        ? 'bg-emerald-600 text-white shadow-lg ring-2 ring-emerald-400/60'
+                        : 'hover:bg-white/5 opacity-80'
+                    }"
+                  >
+                    <span>📞</span>
+                    <span>اتصال صوتي مباشر (Live Voice Call)</span>
+                  </button>
+                </div>
+
+                ${
+                  this.state.simSubMode === 'chat'
+                    ? `<button
+                        type="button"
+                        data-action="start-live-voice-call"
+                        aria-label="اتصل بالممتحن أو البارتنر دابا"
+                        class="w-full py-2.5 px-4 rounded-2xl text-xs sm:text-sm font-extrabold bg-gradient-to-r from-emerald-600 via-teal-500 to-emerald-600 hover:from-emerald-500 hover:to-teal-400 text-white border border-emerald-300/60 shadow-lg flex items-center justify-center gap-2 cursor-pointer transition"
+                      >
+                        <span>📞</span>
+                        <span>اتصل بالممتحن / البارتنر دابا (Live AI Voice Call)</span>
+                      </button>`
+                    : ''
+                }
+              </div>
+
+              ${
+                this.state.simSubMode === 'call'
+                  ? this.renderLiveVoiceCallStudio()
+                  : `
               <!-- Large Hands-Free Voice Mode Button -->
               <button
                 type="button"
@@ -2615,6 +2712,8 @@ export class TelcMasterAppUI {
                   ${this.state.aiLoading ? '⏳...' : 'إرسال ➔'}
                 </button>
               </div>
+              `
+              }
 
               <!-- Google Search Career Grounding Box -->
               <div class="pt-3 border-t border-white/10 space-y-2">
@@ -2652,6 +2751,533 @@ export class TelcMasterAppUI {
           </div>
         </div>
       </section>
+    `;
+  }
+
+  private renderLiveVoiceCallStudio(): string {
+    const exam = this.getCurrentExam();
+    const teil3Topic = this.getCurrentTeil3Topic();
+    const turnCtx = this.buildCurrentSimulatorContext();
+    const whisper = getTeleprompterWhisperLevels(turnCtx);
+
+    const mins = Math.floor(this.state.callDurationSeconds / 60);
+    const secs = this.state.callDurationSeconds % 60;
+    const formattedTime = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+    const modeLabels: Record<'teil1' | 'teil2' | 'teil3' | 'interview', string> = {
+      teil1: 'Teil 1: Bin el Ouidane',
+      teil2: 'Teil 2: Ping-Pong Ronde 1–6',
+      teil3: 'Teil 3: التخطيط 3 دقائق',
+      interview: '💼 مقابلة العمل Wirtschaft'
+    };
+    const activeTopicTitle =
+      this.state.aiSimMode === 'teil2'
+        ? `#${exam.id} ${exam.titleDe}`
+        : this.state.aiSimMode === 'teil3'
+        ? `#${teil3Topic.id} ${teil3Topic.titleDe}`
+        : this.state.aiSimMode === 'teil1'
+        ? 'Mohammed El Jebouri • Reise nach Bin el Ouidane'
+        : `Vorstellungsgespräch Q#${((this.state.simRoundNumber - 1) % 12) + 1}`;
+
+    const avatarMeta: Record<
+      'pruefer_markus' | 'partnerin_lisa' | 'hr_thomas',
+      { emoji: string; nameDe: string; roleDarija: string }
+    > = {
+      pruefer_markus: {
+        emoji: '👨‍🏫',
+        nameDe: 'Prüfer Markus',
+        roleDarija: 'ممتحن رسمي (TELC B2 Prüfer)'
+      },
+      partnerin_lisa: {
+        emoji: '👩‍🎓',
+        nameDe: 'Partnerin Lisa',
+        roleDarija: 'بارتنر الامتحان الشفوي (Ping-Pong Partnerin)'
+      },
+      hr_thomas: {
+        emoji: '👔',
+        nameDe: 'HR-Manager Thomas',
+        roleDarija: 'مدير شركة ألمانية (Wirtschaft & Controlling)'
+      }
+    };
+    const activeAvatar = avatarMeta[this.state.callAvatarRole];
+
+    const isCallActive =
+      this.state.callState === 'AI_SPEAKING' ||
+      this.state.callState === 'USER_LISTENING' ||
+      this.state.callState === 'EVALUATING' ||
+      this.state.callState === 'PAUSED';
+
+    // Orb styling & status label by callState
+    let orbOuterClass = 'border-slate-500/40 bg-slate-900/50';
+    let orbInnerClass = 'border-slate-400/50 bg-slate-800';
+    let statusBadgeText = '⚪ المكالمة واجدة — برك على "ابدأ المكالمة الصوتية" لتحت!';
+    let statusBadgeColor = 'bg-slate-800 text-slate-200 border-slate-600';
+
+    if (this.state.callState === 'AI_SPEAKING') {
+      orbOuterClass = 'border-cyan-400 bg-cyan-500/20 shadow-[0_0_45px_rgba(34,211,238,0.45)] animate-pulse';
+      orbInnerClass = 'border-indigo-400 bg-gradient-to-br from-cyan-600 to-indigo-700';
+      statusBadgeText = '🔵 🗣️ البارتنر كيهضر معاك دابا... اسمع مزيان!';
+      statusBadgeColor = 'bg-cyan-950/90 text-cyan-200 border-cyan-400';
+    } else if (this.state.callState === 'USER_LISTENING') {
+      orbOuterClass = 'border-emerald-400 bg-emerald-500/25 shadow-[0_0_50px_rgba(16,185,129,0.5)] animate-pulse';
+      orbInnerClass = 'border-emerald-300 bg-gradient-to-br from-emerald-600 to-teal-700';
+      statusBadgeText = this.state.callMicMuted
+        ? '🔇 المايك مكتوم — حيد الكتم باش يسمعك البارتنر!'
+        : '🟢 🎙️ نوبتك دابا! هضر بالألمانية (المايك محلول أوتوماتيكياً)...';
+      statusBadgeColor = 'bg-emerald-950/90 text-emerald-200 border-emerald-400';
+    } else if (this.state.callState === 'EVALUATING') {
+      orbOuterClass = 'border-purple-400 bg-purple-500/25 shadow-[0_0_45px_rgba(168,85,247,0.5)] animate-spin';
+      orbInnerClass = 'border-amber-400 bg-gradient-to-br from-purple-700 to-amber-600';
+      statusBadgeText = '🟣 ⚡ كيحلل جوابك وكيوجد الرد الصوتي...';
+      statusBadgeColor = 'bg-purple-950/90 text-purple-200 border-purple-400';
+    } else if (this.state.callState === 'PAUSED') {
+      orbOuterClass = 'border-amber-400/60 bg-amber-500/15';
+      orbInnerClass = 'border-amber-300 bg-amber-900/60';
+      statusBadgeText = '⏸️ المكالمة متوقفة مؤقتاً — برك على استئناف باش تكمل!';
+      statusBadgeColor = 'bg-amber-950/90 text-amber-200 border-amber-400';
+    }
+
+    return `
+      <div class="space-y-3.5" data-testid="live-voice-call-studio">
+        <!-- A. TOP CALL STATUS HEADER -->
+        <div class="p-3.5 rounded-2xl bg-gradient-to-br from-slate-950 via-indigo-950/80 to-emerald-950/70 border border-emerald-500/40 space-y-2.5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2" dir="rtl">
+              <span class="px-2.5 py-1 rounded-full text-xs font-mono-de font-extrabold border ${
+                isCallActive
+                  ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                  : 'bg-white/10 border-white/20 text-slate-300'
+              }">
+                ${formattedTime} ${isCallActive ? '🟢 متصل دابا' : '⚪ جاهز'}
+              </span>
+              <span class="px-2.5 py-0.5 rounded-lg text-[11px] font-extrabold bg-indigo-500/25 text-indigo-200 border border-indigo-400/30">
+                ${escapeHtml(modeLabels[this.state.aiSimMode])}
+              </span>
+            </div>
+            <span class="text-[11px] font-mono-de text-amber-300 font-bold" dir="ltr">
+              Ronde #${this.state.simRoundNumber}
+            </span>
+          </div>
+
+          <div class="text-xs font-bold text-emerald-200 truncate" dir="ltr">
+            📌 ${escapeHtml(activeTopicTitle)}
+          </div>
+
+          <!-- Mode & Call Persona Selectors -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <select
+              data-action="change-ai-sim-mode"
+              aria-label="تغيير وضع الامتحان وسط المكالمة"
+              class="studio-elevated px-2.5 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer"
+              dir="rtl"
+            >
+              <option value="teil2" ${this.state.aiSimMode === 'teil2' ? 'selected' : ''}>🏓 Teil 2: Ping-Pong Ronde 1–6</option>
+              <option value="teil3" ${this.state.aiSimMode === 'teil3' ? 'selected' : ''}>🤝 Teil 3: التخطيط 3 دقائق</option>
+              <option value="teil1" ${this.state.aiSimMode === 'teil1' ? 'selected' : ''}>✈️ Teil 1: Bin el Ouidane</option>
+              <option value="interview" ${this.state.aiSimMode === 'interview' ? 'selected' : ''}>💼 مقابلة العمل Wirtschaft</option>
+            </select>
+
+            <select
+              data-action="change-call-avatar-role"
+              aria-label="اختيار شخصية المتصل في المكالمة"
+              class="studio-elevated px-2.5 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer"
+              dir="rtl"
+            >
+              <option value="pruefer_markus" ${this.state.callAvatarRole === 'pruefer_markus' ? 'selected' : ''}>👨‍🏫 Prüfer Markus (ممتحن رسمي)</option>
+              <option value="partnerin_lisa" ${this.state.callAvatarRole === 'partnerin_lisa' ? 'selected' : ''}>👩‍🎓 Partnerin Lisa (بارتنر الامتحان)</option>
+              <option value="hr_thomas" ${this.state.callAvatarRole === 'hr_thomas' ? 'selected' : ''}>👔 HR-Manager Thomas (مدير شركة ألمانية)</option>
+            </select>
+          </div>
+
+          <!-- CENTER ANIMATED AI AVATAR & DYNAMIC AUDIO ORB -->
+          <div class="py-4 flex flex-col items-center justify-center text-center space-y-3 relative">
+            <div class="relative flex items-center justify-center w-32 h-32">
+              <!-- Outer Soundwave Ring -->
+              <div class="absolute inset-0 rounded-full border-4 transition-all duration-300 ${orbOuterClass}"></div>
+              <!-- Middle Harmonic Ring -->
+              <div class="absolute inset-3 rounded-full border-2 border-white/25 transition-all duration-300"></div>
+              <!-- Inner Avatar Core -->
+              <div class="relative w-20 h-20 rounded-full border-2 flex flex-col items-center justify-center shadow-2xl ${orbInnerClass}">
+                <span class="text-3xl">${activeAvatar.emoji}</span>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-sm font-extrabold text-white" dir="ltr">${escapeHtml(activeAvatar.nameDe)}</div>
+              <div class="text-[11px] text-indigo-200" dir="rtl">${escapeHtml(activeAvatar.roleDarija)}</div>
+            </div>
+
+            <!-- Live Call State Pill -->
+            <div class="px-3.5 py-1.5 rounded-full border text-xs font-extrabold ${statusBadgeColor}" dir="rtl">
+              ${escapeHtml(statusBadgeText)}
+            </div>
+
+            <!-- Non-intrusive Instant Score Toast Card -->
+            ${
+              this.state.callInstantToast
+                ? `<div class="w-full p-2.5 rounded-xl border ${
+                    this.state.callInstantToast.isPositive
+                      ? 'bg-emerald-950/90 border-emerald-400 text-emerald-200'
+                      : 'bg-rose-950/90 border-rose-400 text-rose-200'
+                  } text-xs space-y-1 shadow-lg" dir="rtl">
+                    <div class="font-extrabold">${escapeHtml(this.state.callInstantToast.badgeText)}</div>
+                    <div class="text-[11px] opacity-90">${escapeHtml(this.state.callInstantToast.detailDarija)}</div>
+                  </div>`
+                : ''
+            }
+
+            <!-- What the AI Partner just said / asked -->
+            <div class="w-full p-3 rounded-xl bg-black/45 border border-cyan-500/30 text-left space-y-1" dir="ltr">
+              <div class="flex items-center justify-between text-[10px] text-cyan-300 font-bold">
+                <span>🗣️ ${escapeHtml(activeAvatar.nameDe)} sagt:</span>
+                <button
+                  type="button"
+                  data-action="call-repeat-last-ai"
+                  aria-label="تكرار آخر جملة قالها البارتنر"
+                  class="px-2 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/40 text-cyan-200 cursor-pointer"
+                  dir="rtl"
+                >
+                  🔊 عاود سمع السؤال
+                </button>
+              </div>
+              <div class="text-xs sm:text-sm font-medium leading-relaxed text-white">
+                „${escapeHtml(this.state.callLastAiQuestionDe)}“
+              </div>
+            </div>
+
+            <!-- Floating Live Captions Bar (محمد كيهضر دابا) + Manual Send / Retry Controls -->
+            <div class="w-full p-3 rounded-xl bg-emerald-950/50 border border-emerald-500/40 space-y-2">
+              <div class="flex items-center justify-between text-[11px]" dir="rtl">
+                <span class="font-extrabold text-emerald-300">
+                  🎙️ Live Captions (كلامك المباشر بالألمانية):
+                </span>
+                <span class="text-[10px] text-amber-300">
+                  ⚡ كيتصيفط أوتوماتيكياً مور 2.4 ثواني د السكوت
+                </span>
+              </div>
+
+              <input
+                type="text"
+                data-action="call-live-caption-input"
+                value="${escapeHtml(this.state.callLiveCaptionDe)}"
+                placeholder="هضر بصوتك دابا أو كتب/عدل جملتك الألمانية هنا وسط المكالمة..."
+                aria-label="الترجمة الحية لصوت محمد وسط المكالمة"
+                class="w-full px-3 py-2 rounded-lg bg-black/50 border border-emerald-400/40 text-xs sm:text-sm text-white font-mono-de"
+                dir="ltr"
+              />
+
+              <div class="flex flex-wrap items-center gap-2" dir="rtl">
+                <button
+                  type="button"
+                  data-action="call-submit-turn"
+                  aria-label="ساليت جملتي دوز للجولة الجاية"
+                  class="flex-1 py-2 px-3 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer shadow"
+                >
+                  ✅ ساليت جملتي / دوز للجولة الجاية
+                </button>
+                <button
+                  type="button"
+                  data-action="call-retry-turn"
+                  aria-label="عاود جملتي"
+                  class="py-2 px-3 rounded-xl text-xs font-extrabold bg-amber-500/25 hover:bg-amber-500 text-amber-200 hover:text-black border border-amber-400/40 cursor-pointer"
+                >
+                  🔄 عاود جملتي
+                </button>
+              </div>
+            </div>
+
+            <!-- Start Call CTA button when IDLE or ENDED -->
+            ${
+              !isCallActive
+                ? `<button
+                    type="button"
+                    data-action="start-live-voice-call"
+                    aria-label="ابدأ المكالمة الصوتية Start Voice Call"
+                    class="w-full py-3.5 px-5 rounded-2xl text-sm font-extrabold bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 text-black shadow-xl flex items-center justify-center gap-2 cursor-pointer ring-2 ring-emerald-300"
+                    dir="rtl"
+                  >
+                    <span class="text-lg">📞</span>
+                    <span>📞 ابدأ المكالمة الصوتية (Start Voice Call)</span>
+                  </button>`
+                : ''
+            }
+          </div>
+        </div>
+
+        <!-- 2. SMART IN-CALL TELEPROMPTER & "WHISPER COACH" (المساعد السري وسط المكالمة) -->
+        <div class="p-3.5 rounded-2xl studio-elevated border border-amber-500/40 space-y-2.5">
+          <div class="flex items-center justify-between" dir="rtl">
+            <button
+              type="button"
+              data-action="toggle-call-teleprompter"
+              aria-label="فتح أو طي شاشة التلقين السريعة"
+              class="text-xs font-extrabold text-amber-300 flex items-center gap-1.5 cursor-pointer"
+            >
+              <span>👀 شاشة التلقين السريعة (Live Teleprompter / Whisper Hint)</span>
+              <span>${this.state.callTeleprompterOpen ? '▲' : '▼'}</span>
+            </button>
+            <span class="text-[10px] opacity-75" dir="rtl">3 مستويات مساعدة</span>
+          </div>
+
+          ${
+            this.state.callTeleprompterOpen
+              ? `
+                <!-- 3 Teleprompter Level Tabs -->
+                <div class="grid grid-cols-3 gap-1.5" dir="rtl">
+                  <button
+                    type="button"
+                    data-action="set-teleprompter-level"
+                    data-level="1"
+                    aria-label="المستوى 1 تلميح بالدارجة فقط"
+                    class="py-1.5 px-2 rounded-lg text-[11px] font-extrabold cursor-pointer border ${
+                      this.state.callTeleprompterLevel === 1
+                        ? 'bg-amber-500 text-black border-amber-300'
+                        : 'bg-black/30 border-white/10 text-amber-200'
+                    }"
+                  >
+                    💡 1. تلميح بالدارجة
+                  </button>
+                  <button
+                    type="button"
+                    data-action="set-teleprompter-level"
+                    data-level="2"
+                    aria-label="المستوى 2 بداية الجملة البينغ بونغ"
+                    class="py-1.5 px-2 rounded-lg text-[11px] font-extrabold cursor-pointer border ${
+                      this.state.callTeleprompterLevel === 2
+                        ? 'bg-indigo-600 text-white border-indigo-300'
+                        : 'bg-black/30 border-white/10 text-indigo-200'
+                    }"
+                  >
+                    🧩 2. بداية الجملة
+                  </button>
+                  <button
+                    type="button"
+                    data-action="set-teleprompter-level"
+                    data-level="3"
+                    aria-label="المستوى 3 الجملة كاملة قراها بصوتك"
+                    class="py-1.5 px-2 rounded-lg text-[11px] font-extrabold cursor-pointer border ${
+                      this.state.callTeleprompterLevel === 3
+                        ? 'bg-emerald-600 text-white border-emerald-300'
+                        : 'bg-black/30 border-white/10 text-emerald-200'
+                    }"
+                  >
+                    📖 3. الجملة كاملة
+                  </button>
+                </div>
+
+                <!-- Active Teleprompter Content -->
+                <div class="p-3 rounded-xl bg-black/45 border border-white/10 space-y-2">
+                  ${
+                    this.state.callTeleprompterLevel === 1
+                      ? `<div class="text-xs sm:text-sm font-bold text-amber-300 leading-relaxed" dir="rtl">
+                          ${escapeHtml(whisper.level1Darija)}
+                        </div>`
+                      : this.state.callTeleprompterLevel === 2
+                      ? `<div class="text-xs sm:text-sm font-mono-de text-indigo-200 leading-relaxed" dir="ltr">
+                          „${escapeHtml(whisper.level2StarterDe)}“
+                        </div>`
+                      : `<div class="space-y-2" dir="ltr">
+                          <div class="text-xs sm:text-sm leading-relaxed text-emerald-100">
+                            „${renderClauseWithGoldVerb(whisper.level3FullDe)}“
+                          </div>
+                          <div class="flex flex-wrap gap-2" dir="rtl">
+                            <button
+                              type="button"
+                              data-action="call-use-full-sentence"
+                              data-sentence="${escapeHtml(whisper.level3FullDe)}"
+                              aria-label="قول هاد الجملة فـ المكالمة دابا"
+                              class="px-3 py-1 rounded-lg text-[11px] font-extrabold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
+                            >
+                              🎙️ قول هاد الجملة فـ المكالمة دابا
+                            </button>
+                            <button
+                              type="button"
+                              data-action="speak-text"
+                              data-text="${escapeHtml(whisper.level3FullDe)}"
+                              aria-label="اسمع نطق الجملة كاملة"
+                              class="px-3 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer"
+                            >
+                              🔊 اسمع نطقها
+                            </button>
+                          </div>
+                        </div>`
+                  }
+                </div>
+
+                <!-- 🛟 زر الأوكسجين وسط المكالمة (Interrupt / Rescue Phrase) -->
+                <div class="flex flex-wrap items-center gap-1.5 pt-1" dir="rtl">
+                  <button
+                    type="button"
+                    data-action="call-use-rescue"
+                    data-phrase="${escapeHtml(whisper.rescueInterruptPhraseDe)}"
+                    aria-label="زر الأوكسجين قاطع البارتنر بأدب"
+                    class="flex-1 py-1.5 px-2.5 rounded-xl text-[11px] font-extrabold bg-sky-500/20 hover:bg-sky-500 text-sky-200 hover:text-black border border-sky-400/40 cursor-pointer transition"
+                  >
+                    🛟 زر الأوكسجين: قاطع بأدب (Entschuldigung, darf ich...)
+                  </button>
+                  <button
+                    type="button"
+                    data-action="call-use-rescue"
+                    data-phrase="${escapeHtml(whisper.rescuePartnerPhraseDe)}"
+                    aria-label="زر الأوكسجين أنقذ البارتنر بسؤال"
+                    class="py-1.5 px-2.5 rounded-xl text-[11px] font-extrabold bg-purple-500/20 hover:bg-purple-500 text-purple-200 hover:text-white border border-purple-400/40 cursor-pointer transition"
+                  >
+                    🛟 سول البارتنر (Wie siehst du das?)
+                  </button>
+                </div>
+              `
+              : ''
+          }
+        </div>
+
+        <!-- 3. BOTTOM CALL DOCK (PHONE CALL CONTROLS) -->
+        <div class="p-3 rounded-2xl bg-black/50 border border-white/15 space-y-2" dir="rtl">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            <button
+              type="button"
+              data-action="call-toggle-mute-mic"
+              aria-label="كتم أو تشغيل المايكروفون"
+              class="py-2 px-2.5 rounded-xl text-[11px] font-extrabold cursor-pointer border ${
+                this.state.callMicMuted
+                  ? 'bg-rose-600/30 border-rose-400 text-rose-200'
+                  : 'studio-elevated hover:border-emerald-400'
+              }"
+            >
+              ${this.state.callMicMuted ? '🔇 المايك مكتوم (Unmute)' : '🎙️ كتم المايك (Mute)'}
+            </button>
+
+            <button
+              type="button"
+              data-action="call-toggle-pause"
+              aria-label="إيقاف مؤقت للمكالمة"
+              class="py-2 px-2.5 rounded-xl text-[11px] font-extrabold cursor-pointer border ${
+                this.state.callState === 'PAUSED'
+                  ? 'bg-amber-500 text-black border-amber-300'
+                  : 'studio-elevated hover:border-amber-400'
+              }"
+            >
+              ${this.state.callState === 'PAUSED' ? '▶️ كمل المكالمة' : '⏸️ إيقاف مؤقت'}
+            </button>
+
+            <button
+              type="button"
+              data-action="call-toggle-speed"
+              aria-label="سرعة صوت البارتنر"
+              class="py-2 px-2.5 rounded-xl text-[11px] font-extrabold studio-elevated hover:border-indigo-400 cursor-pointer"
+            >
+              ${this.state.simSpeakSpeed === 0.85 ? '🐢 سرعة: 0.85x بطيء' : '⚡ سرعة: 1.0x طبيعي'}
+            </button>
+
+            <button
+              type="button"
+              data-action="call-repeat-last-ai"
+              aria-label="تكرار آخر جملة قالها البارتنر"
+              class="py-2 px-2.5 rounded-xl text-[11px] font-extrabold studio-elevated hover:border-cyan-400 cursor-pointer"
+            >
+              🔊 تكرار سؤال البارتنر
+            </button>
+          </div>
+
+          <button
+            type="button"
+            data-action="call-end-and-report"
+            aria-label="قطع المكالمة وعرض تقرير الامتحان"
+            class="w-full py-2.5 px-4 rounded-xl text-xs font-extrabold bg-rose-600 hover:bg-rose-500 text-white shadow-lg cursor-pointer flex items-center justify-center gap-2"
+          >
+            <span>📵</span>
+            <span>قطع المكالمة وعرض تقرير الامتحان الشفوي (End Call & Show Full Report)</span>
+          </button>
+        </div>
+
+        <!-- POST-CALL DIAGNOSTIC REPORT CARD (تقرير المكالمة الشفوية) -->
+        ${
+          this.state.callReport
+            ? `
+              <div class="p-4 rounded-2xl bg-gradient-to-br from-emerald-950/90 via-slate-950 to-indigo-950/90 border-2 border-emerald-400 space-y-3" data-testid="post-call-report-card">
+                <div class="flex flex-wrap items-center justify-between gap-2" dir="rtl">
+                  <div>
+                    <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold">
+                      Official TELC B2 Mündlich Call Report
+                    </span>
+                    <h4 class="text-sm sm:text-base font-extrabold text-white mt-0.5">
+                      📊 تقرير المكالمة الشفوية وتصحيح الجمل (60/60 Pkt.)
+                    </h4>
+                  </div>
+                  <span class="px-3 py-1 rounded-xl font-mono-de text-xs font-extrabold ${
+                    this.state.callReport.passed
+                      ? 'bg-emerald-500 text-black'
+                      : 'bg-rose-600 text-white'
+                  }" dir="ltr">
+                    ${this.state.callReport.totalOutOf60} / 60 Pkt. (${this.state.callReport.passed ? 'BESTANDEN ✅' : 'NICHT BESTANDEN ❌'})
+                  </span>
+                </div>
+
+                <!-- Call Duration & Fluency Metrics -->
+                <div class="grid grid-cols-3 gap-2 text-center" dir="rtl">
+                  <div class="p-2 rounded-xl bg-black/40 border border-white/10">
+                    <div class="text-[10px] opacity-75">مدة المكالمة</div>
+                    <div class="text-xs sm:text-sm font-extrabold text-emerald-300 font-mono-de" dir="ltr">${this.state.callReport.durationFormatted}</div>
+                  </div>
+                  <div class="p-2 rounded-xl bg-black/40 border border-white/10">
+                    <div class="text-[10px] opacity-75">سرعة الطلاقة (Fluency)</div>
+                    <div class="text-xs sm:text-sm font-extrabold text-amber-300 font-mono-de" dir="ltr">${this.state.callReport.fluencyWordsPerMinute} WPM</div>
+                  </div>
+                  <div class="p-2 rounded-xl bg-black/40 border border-white/10">
+                    <div class="text-[10px] opacity-75">المستوى الشفوي</div>
+                    <div class="text-xs sm:text-sm font-extrabold text-indigo-300 font-mono-de" dir="ltr">Niveau ${this.state.callReport.cefrOverall}</div>
+                  </div>
+                </div>
+
+                <!-- 4 Official TELC B2 Criteria Out of 15 -->
+                <div class="grid grid-cols-2 gap-1.5 text-[11px]" dir="ltr">
+                  <div class="p-2 rounded-lg bg-black/35 border border-white/10">Ausdrucksfähigkeit: <strong>${this.state.callReport.ausdruck} / 15</strong></div>
+                  <div class="p-2 rounded-lg bg-black/35 border border-white/10">Aufgabenbewältigung: <strong>${this.state.callReport.aufgabe} / 15</strong></div>
+                  <div class="p-2 rounded-lg bg-black/35 border border-white/10">Formale Richtigkeit: <strong>${this.state.callReport.korrektheit} / 15</strong></div>
+                  <div class="p-2 rounded-lg bg-black/35 border border-white/10">Aussprache & Intonation: <strong>${this.state.callReport.aussprache} / 15</strong></div>
+                </div>
+
+                <div class="text-xs font-bold text-amber-300 leading-relaxed" dir="rtl">
+                  ${escapeHtml(this.state.callReport.summaryDarija)}
+                </div>
+
+                <!-- Sentence-by-Sentence Review -->
+                ${
+                  this.state.callReport.turnReviews.length > 0
+                    ? `<div class="space-y-2 pt-2 border-t border-white/15">
+                        <div class="text-xs font-extrabold text-emerald-300" dir="rtl">
+                          🔍 مراجعة جملة بجملة (شنو قلتي فالمكالمة vs الجملة الألمانية 100% B2):
+                        </div>
+                        ${this.state.callReport.turnReviews
+                          .map(
+                            (tr) => `
+                              <div class="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5 text-xs">
+                                <div class="flex items-center justify-between" dir="ltr">
+                                  <span class="font-bold text-emerald-300">Turn #${tr.turnIndex} (${tr.scoreOutOf60}/60 Pkt. • ${escapeHtml(tr.cefrLevel)})</span>
+                                  <span class="text-[10px] ${tr.verbAtEndCorrect ? 'text-emerald-400' : 'text-rose-400'}">
+                                    ${tr.verbAtEndCorrect ? '✅ Verb am Ende OK' : '⚠️ Verb am Ende prüfen'}
+                                  </span>
+                                </div>
+                                <div class="text-[11px] text-slate-300" dir="ltr">
+                                  <strong>🗣️ Du hast gesagt:</strong> „${escapeHtml(tr.userSaidDe)}“
+                                </div>
+                                <div class="text-[11px] text-emerald-200" dir="ltr">
+                                  <strong>🎯 100% B2 Muster:</strong> „${renderClauseWithGoldVerb(tr.targetSentenceDe)}“
+                                </div>
+                                <div class="text-[11px] text-amber-300" dir="rtl">
+                                  💡 ${escapeHtml(tr.darijaCritique)}
+                                </div>
+                              </div>
+                            `
+                          )
+                          .join('')}
+                      </div>`
+                    : ''
+                }
+              </div>
+            `
+            : ''
+        }
+      </div>
     `;
   }
 
@@ -3529,6 +4155,105 @@ export class TelcMasterAppUI {
           break;
         }
 
+        // Live AI Voice Call Studio actions
+        case 'set-sim-submode': {
+          const sub = target.dataset.submode as 'chat' | 'call';
+          if (sub === 'chat' || sub === 'call') {
+            if (sub === 'chat' && this.state.callState !== 'IDLE' && this.state.callState !== 'ENDED') {
+              this.pauseCallDevices();
+            }
+            this.state.simSubMode = sub;
+            this.render();
+          }
+          break;
+        }
+        case 'start-live-voice-call': {
+          this.startLiveVoiceCall();
+          break;
+        }
+        case 'call-submit-turn': {
+          void this.handleVoiceCallTurnSubmit();
+          break;
+        }
+        case 'call-retry-turn': {
+          this.state.callLiveCaptionDe = '';
+          this.startCallListeningMic();
+          this.render();
+          break;
+        }
+        case 'toggle-call-teleprompter': {
+          this.state.callTeleprompterOpen = !this.state.callTeleprompterOpen;
+          this.render();
+          break;
+        }
+        case 'set-teleprompter-level': {
+          const lvl = Number(target.dataset.level) as 1 | 2 | 3;
+          if (lvl === 1 || lvl === 2 || lvl === 3) {
+            this.state.callTeleprompterLevel = lvl;
+            this.render();
+          }
+          break;
+        }
+        case 'call-use-full-sentence': {
+          const sentence = target.dataset.sentence || '';
+          if (sentence) {
+            this.state.callLiveCaptionDe = sentence;
+            void this.handleVoiceCallTurnSubmit();
+          }
+          break;
+        }
+        case 'call-use-rescue': {
+          const phrase = target.dataset.phrase || '';
+          if (phrase) {
+            this.state.callLiveCaptionDe = phrase;
+            this.render();
+          }
+          break;
+        }
+        case 'call-toggle-mute-mic': {
+          this.state.callMicMuted = !this.state.callMicMuted;
+          if (this.state.callMicMuted) {
+            this.stopCallListeningMic();
+          } else if (this.state.callState === 'USER_LISTENING') {
+            this.startCallListeningMic();
+          }
+          this.render();
+          break;
+        }
+        case 'call-toggle-pause': {
+          if (this.state.callState === 'PAUSED') {
+            this.state.callState = 'USER_LISTENING';
+            this.startCallTimerInterval();
+            if (!this.state.callMicMuted) {
+              this.startCallListeningMic();
+            }
+          } else if (
+            this.state.callState === 'AI_SPEAKING' ||
+            this.state.callState === 'USER_LISTENING' ||
+            this.state.callState === 'EVALUATING'
+          ) {
+            this.pauseCallDevices();
+            this.state.callState = 'PAUSED';
+          }
+          this.render();
+          break;
+        }
+        case 'call-toggle-speed': {
+          this.state.simSpeakSpeed = this.state.simSpeakSpeed === 0.85 ? 1.0 : 0.85;
+          this.render();
+          break;
+        }
+        case 'call-repeat-last-ai': {
+          if (this.state.callLastAiQuestionDe) {
+            this.speakCallAiTurnAndHandoffToMic(this.state.callLastAiQuestionDe);
+          }
+          break;
+        }
+        case 'call-end-and-report': {
+          this.endLiveVoiceCallAndBuildReport();
+          break;
+        }
+
         // 3D XR & Bioscience
         case 'xr-prev-round': {
           this.state.xrRoundIndex = (this.state.xrRoundIndex + 5) % 6;
@@ -3583,6 +4308,10 @@ export class TelcMasterAppUI {
       } else if (action === 'change-ai-persona') {
         this.state.aiPersona = (target as HTMLSelectElement).value as PartnerPersona;
         this.render();
+      } else if (action === 'change-call-avatar-role') {
+        const role = (target as HTMLSelectElement).value as 'pruefer_markus' | 'partnerin_lisa' | 'hr_thomas';
+        this.state.callAvatarRole = role;
+        this.render();
       }
     });
 
@@ -3604,6 +4333,8 @@ export class TelcMasterAppUI {
         void syncProgressToFirestore(this.state.progress);
       } else if (action === 'ai-chat-input') {
         this.state.aiUserMessage = target.value;
+      } else if (action === 'call-live-caption-input') {
+        this.state.callLiveCaptionDe = target.value;
       } else if (action === 'career-search-input') {
         this.state.careerSearchQuery = target.value;
       }
@@ -3630,7 +4361,10 @@ export class TelcMasterAppUI {
         slot3Point2: exam.slot3Point2,
         slot4Advantage: exam.slot4Advantage,
         slot5Disadvantage: exam.slot5Disadvantage,
-        slot6Morocco: exam.slot6Morocco
+        slot6Morocco: exam.slot6Morocco,
+        slot2Darija: exam.slot2Darija,
+        slot4Darija: exam.slot4Darija,
+        slot6Darija: exam.slot6Darija
       },
       teil3Topic,
       teil3AllPoints: TEIL3_20_UNIVERSAL_POINTS,
@@ -3648,8 +4382,18 @@ export class TelcMasterAppUI {
     this.state.simTurnScores = [];
     this.state.simHintVisible = false;
 
+    if (mode === 'interview') {
+      this.state.callAvatarRole = 'hr_thomas';
+    } else if (mode === 'teil1') {
+      this.state.callAvatarRole = 'pruefer_markus';
+    } else {
+      this.state.callAvatarRole = 'partnerin_lisa';
+    }
+
     const ctx = this.buildCurrentSimulatorContext();
     const expected = getExpectedSentenceForTurn(ctx);
+    const callGreeting = getVoiceCallOpeningGreeting(ctx);
+    this.state.callLastAiQuestionDe = callGreeting;
 
     let openingDe = '';
     let openingDarija = '';
@@ -3680,7 +4424,256 @@ export class TelcMasterAppUI {
         correctedSentenceDe: expected.targetSentenceDe
       }
     ];
-    this.speakPartnerReply(openingDe, false);
+
+    if (this.state.simSubMode === 'call' && this.state.callState !== 'IDLE') {
+      this.speakCallAiTurnAndHandoffToMic(callGreeting);
+    } else {
+      this.speakPartnerReply(openingDe, false);
+      this.render();
+    }
+  }
+
+  private startLiveVoiceCall(): void {
+    this.stopSimulatorMicAndOptionallySend(false);
+    this.pauseCallDevices();
+
+    this.state.simSubMode = 'call';
+    this.state.simRoundNumber = 1;
+    this.state.simTurnScores = [];
+    this.state.callDurationSeconds = 0;
+    this.state.callLiveCaptionDe = '';
+    this.state.callInstantToast = null;
+    this.state.callTurnsLog = [];
+    this.state.callReport = null;
+
+    if (this.state.aiSimMode === 'interview') {
+      this.state.callAvatarRole = 'hr_thomas';
+    } else if (this.state.aiSimMode === 'teil1') {
+      this.state.callAvatarRole = 'pruefer_markus';
+    } else {
+      this.state.callAvatarRole = 'partnerin_lisa';
+    }
+
+    const turnCtx = this.buildCurrentSimulatorContext();
+    const expected = getExpectedSentenceForTurn(turnCtx);
+    const greetingDe = getVoiceCallOpeningGreeting(turnCtx);
+    this.state.callLastAiQuestionDe = greetingDe;
+
+    // Also sync the call opening to the Chat transcript!
+    this.state.aiConversation.push({
+      sender: 'partner',
+      textDe: `📞 [Live Voice Call gestartet] ${greetingDe}`,
+      darijaTip: '📞 اتصلتي بالبارتنر/الممتحن! اسمع السؤال وجاوب بصوتك أوتوماتيكياً بلا ما تبرك على حتى زر.',
+      correctedSentenceDe: expected.targetSentenceDe
+    });
+
+    // Play 1-second phone connection sound
+    sfx.playPhoneConnectRing();
+    this.startCallTimerInterval();
+    this.speakCallAiTurnAndHandoffToMic(greetingDe);
+  }
+
+  private startCallTimerInterval(): void {
+    if (this.callTimerInterval) {
+      window.clearInterval(this.callTimerInterval);
+    }
+    this.callTimerInterval = window.setInterval(() => {
+      if (
+        this.state.callState === 'AI_SPEAKING' ||
+        this.state.callState === 'USER_LISTENING' ||
+        this.state.callState === 'EVALUATING'
+      ) {
+        this.state.callDurationSeconds += 1;
+        this.render();
+      }
+    }, 1000);
+  }
+
+  private speakCallAiTurnAndHandoffToMic(aiTextDe: string): void {
+    this.stopCallListeningMic();
+    this.state.callLastAiQuestionDe = aiTextDe;
+    this.state.callState = 'AI_SPEAKING';
+    this.render();
+
+    speakGermanText(aiTextDe, this.state.simSpeakSpeed, (isSpeaking) => {
+      if (!isSpeaking && this.state.callState === 'AI_SPEAKING') {
+        // Automatic Mic Handoff: AI_SPEAKING -> USER_LISTENING
+        sfx.playListeningReadyChime();
+        this.state.callState = 'USER_LISTENING';
+        if (!this.state.callMicMuted) {
+          this.startCallListeningMic();
+        }
+        this.render();
+      }
+    });
+  }
+
+  private startCallListeningMic(): void {
+    this.stopCallListeningMic();
+    if (this.state.callMicMuted) return;
+
+    this.callSpeechRec = startBrowserSpeechRecognition(
+      (transcript) => {
+        this.state.callLiveCaptionDe = transcript;
+        const capInput = this.root.querySelector<HTMLInputElement>('[data-action="call-live-caption-input"]');
+        if (capInput) {
+          capInput.value = transcript;
+        }
+
+        // Smart 2400ms silence auto-submit timer
+        if (this.callSilenceTimer) {
+          window.clearTimeout(this.callSilenceTimer);
+        }
+        this.callSilenceTimer = window.setTimeout(() => {
+          if (this.state.callState === 'USER_LISTENING' && this.state.callLiveCaptionDe.trim()) {
+            void this.handleVoiceCallTurnSubmit();
+          }
+        }, 2400);
+      },
+      () => {
+        // Keep USER_LISTENING active so user can still use the Live Captions input or Teleprompter button
+      },
+      () => {
+        // Speech recognition ended
+      },
+      {
+        lang: 'de-DE',
+        continuous: true
+      }
+    );
+  }
+
+  private stopCallListeningMic(): void {
+    if (this.callSilenceTimer) {
+      window.clearTimeout(this.callSilenceTimer);
+      this.callSilenceTimer = null;
+    }
+    this.callSpeechRec?.stop();
+    this.callSpeechRec = null;
+  }
+
+  private pauseCallDevices(): void {
+    this.stopCallListeningMic();
+    stopGermanSpeech();
+    if (this.callTimerInterval) {
+      window.clearInterval(this.callTimerInterval);
+      this.callTimerInterval = null;
+    }
+  }
+
+  private async handleVoiceCallTurnSubmit(): Promise<void> {
+    const userMsg = this.state.callLiveCaptionDe.trim();
+    if (!userMsg || this.state.callState === 'EVALUATING') return;
+
+    this.stopCallListeningMic();
+    this.state.callState = 'EVALUATING';
+    this.state.callLiveCaptionDe = '';
+    this.render();
+
+    const turnCtx = this.buildCurrentSimulatorContext(userMsg);
+    const expectedBeforeEval = getExpectedSentenceForTurn(turnCtx);
+
+    const topicTitle =
+      this.state.aiSimMode === 'teil2'
+        ? this.getCurrentExam().titleDe
+        : this.state.aiSimMode === 'teil3'
+        ? this.getCurrentTeil3Topic().titleDe
+        : this.state.aiSimMode === 'teil1'
+        ? 'Reise nach Bin el Ouidane'
+        : 'Vorstellungsgespräch Bachelor Wirtschaft';
+
+    // Sync Mohammed's spoken turn to Chat Transcript
+    this.state.aiConversation.push({
+      sender: 'mohammed',
+      textDe: userMsg
+    });
+
+    const result = await evaluateTurnWithStrictExaminer({
+      ...turnCtx,
+      persona: this.state.aiPersona,
+      topicTitle
+    });
+
+    if (result.isSanityRejected) {
+      sfx.playErrorBuzz();
+      this.state.callInstantToast = {
+        badgeText: '0 / 60 Pkt. ❌ (جواب غير مقبول فـ الامتحان)',
+        isPositive: false,
+        detailDarija: result.pronunciationAndGrammarFeedbackDarija
+      };
+    } else {
+      sfx.playPingPongHit();
+      this.state.simTurnScores.push(result.scoreOutOf60);
+      this.state.simRoundNumber = result.nextRoundNumber;
+      this.addXpAndSync(30);
+      this.state.callInstantToast = {
+        badgeText: `+${result.scoreOutOf60}/60 Pkt. • Niveau ${result.cefrLevel} ${
+          result.verbAtEndCorrect ? '✅ (Verb am Ende OK)' : '⚠️ (انتبه للفعل فاللخر)'
+        }`,
+        isPositive: true,
+        detailDarija: result.pronunciationAndGrammarFeedbackDarija
+      };
+    }
+
+    // Log turn for Post-Call Diagnostic Report Card
+    this.state.callTurnsLog.push({
+      userSaidDe: userMsg,
+      targetSentenceDe: expectedBeforeEval.targetSentenceDe,
+      scoreOutOf60: result.scoreOutOf60,
+      cefrLevel: result.cefrLevel,
+      darijaCritique: result.pronunciationAndGrammarFeedbackDarija,
+      verbAtEndCorrect: result.verbAtEndCorrect
+    });
+
+    // If Teil 3 planning point was detected, check it off on the Scratchpad!
+    if (result.detectedTeil3PointNumber) {
+      if (!this.state.teil3CheckedPointNumbers.includes(result.detectedTeil3PointNumber)) {
+        this.state.teil3CheckedPointNumbers.push(result.detectedTeil3PointNumber);
+      }
+      const ptObj = TEIL3_20_UNIVERSAL_POINTS.find((p) => p.number === result.detectedTeil3PointNumber);
+      if (ptObj && !this.state.progress.scratchpadNotes.includes(`✅ #${ptObj.number}`)) {
+        this.state.progress.scratchpadNotes = `${this.state.progress.scratchpadNotes}\n✅ #${ptObj.number} ${ptObj.titleDe}: besprochen`.trim();
+        void syncProgressToFirestore(this.state.progress);
+      }
+    }
+
+    // Sync AI Examiner reply & critique to Chat Transcript (`💬 وضع الشات`)
+    this.state.aiConversation.push({
+      sender: 'partner',
+      textDe: result.partnerGermanReply,
+      darijaTip: result.pronunciationAndGrammarFeedbackDarija,
+      score: result.scoreOutOf60,
+      cefrLevel: result.cefrLevel,
+      isSanityRejected: result.isSanityRejected,
+      correctedSentenceDe: result.isSanityRejected
+        ? result.correctedGermanSentence
+        : result.targetSentenceForCurrentOrNextTurn,
+      sauerstoff: result.sauerstoffHintIfNeeded,
+      scorecard: result.completedScorecard
+    });
+
+    // If a full Teil 2 scorecard was completed on Ronde 5, also build the Post-Call Report automatically
+    if (result.completedScorecard) {
+      this.state.callReport = buildPostCallDiagnosticReport({
+        durationSeconds: Math.max(15, this.state.callDurationSeconds),
+        turns: this.state.callTurnsLog
+      });
+    }
+
+    // Transition EVALUATING -> AI_SPEAKING -> USER_LISTENING
+    this.speakCallAiTurnAndHandoffToMic(result.partnerGermanReply);
+  }
+
+  private endLiveVoiceCallAndBuildReport(): void {
+    this.pauseCallDevices();
+    this.state.callState = 'ENDED';
+    this.state.callReport = buildPostCallDiagnosticReport({
+      durationSeconds: Math.max(10, this.state.callDurationSeconds),
+      turns: this.state.callTurnsLog
+    });
+    if (this.state.callReport.passed) {
+      sfx.playFanfare();
+    }
     this.render();
   }
 

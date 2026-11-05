@@ -388,6 +388,9 @@ export interface SimulatorTurnContext {
     slot4Advantage: string;
     slot5Disadvantage: string;
     slot6Morocco: string;
+    slot2Darija?: string;
+    slot4Darija?: string;
+    slot6Darija?: string;
   };
   teil3Topic?: Teil3Topic;
   teil3AllPoints?: Teil3PlanningPoint[];
@@ -1015,3 +1018,272 @@ export function buildIdeaBankForExam(exam: Teil2Exam): IdeaCardItem[] {
     validCards[3],
   ];
 }
+
+/**
+ * Generates the exact opening German greeting for the Live AI Voice Call Mode.
+ */
+export function getVoiceCallOpeningGreeting(ctx: SimulatorTurnContext): string {
+  if (ctx.mode === 'teil1') {
+    return 'Hallo Mohammed! Schön, dich kennenzulernen. Stell dich bitte kurz vor und beginne dann mit deiner Präsentation über Bin el Ouidane!';
+  }
+  if (ctx.mode === 'teil2') {
+    const title = ctx.teil2Exam?.titleDe || 'Fast Food kann süchtig machen';
+    return `Hallo Mohammed! Wir diskutieren heute über das Thema „${title}“. Bitte beginne mit deiner Einleitung in Ronde 1!`;
+  }
+  if (ctx.mode === 'teil3') {
+    const title = ctx.teil3Topic?.dkhlaSlotAccusative || ctx.teil3Topic?.titleDe || 'unser gemeinsames Projekt';
+    return `Hallo Mohammed! Wie du weißt, planen wir zusammen ${title}. Hast du dir dazu schon ein paar Gedanken gemacht?`;
+  }
+  return 'Guten Tag, Herr El Jebouri! Willkommen zum Vorstellungsgespräch. Erzählen Sie mir bitte zuerst kurz etwas über sich und Ihr Wirtschaftsstudium in Fès.';
+}
+
+/**
+ * Generates the 3-level Smart In-Call Teleprompter & Whisper Coach hints
+ * plus the Interrupt / Rescue Oxygen phrases for the active call turn.
+ */
+export function getTeleprompterWhisperLevels(ctx: SimulatorTurnContext): {
+  level1Darija: string;
+  level2StarterDe: string;
+  level3FullDe: string;
+  rescueInterruptPhraseDe: string;
+  rescuePartnerPhraseDe: string;
+} {
+  const expected = getExpectedSentenceForTurn(ctx);
+  const rescueInterruptPhraseDe =
+    'Entschuldigung, darf ich kurz etwas ergänzen? Ich denke nämlich, dass wir diesen Punkt auch beachten sollten.';
+  const rescuePartnerPhraseDe =
+    'Wie siehst du das? Hast du vielleicht schon Erfahrungen damit gemacht oder einen anderen Vorschlag?';
+
+  if (ctx.mode === 'teil2' && ctx.teil2Exam) {
+    const ex = ctx.teil2Exam;
+    if (ctx.roundNumber <= 1) {
+      return {
+        level1Darija: `💡 قول دابا الفكرة 1 من الورقة: ${ex.slot2Darija || `الموضوع هو ${ex.titleDarija}`}`,
+        level2StarterDe: `Der Text befasst sich mit dem Thema „${ex.slot1Theme}“. Zuerst wird beschrieben, dass ... [Verb am Ende]. Welche Informationen hast du noch gefunden?`,
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    if (ctx.roundNumber === 3) {
+      return {
+        level1Darija: `💡 قول دابا رأيك + الإيجابية (Vorteil): ${ex.slot4Darija || 'هاد الموضوع مهم بزاف وعندو إيجابيات فـ الحياة اليومية'}`,
+        level2StarterDe:
+          'Ich bin der Ansicht, dass dieses Thema sehr wichtig ist. Ein großer Vorteil ist meiner Meinung nach, dass ... [Verb am Ende]. Wie siehst du das?',
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    return {
+      level1Darija: `💡 قول دابا الجوكر ديال التجربة والواقع فـ المغرب: ${ex.slot6Darija || 'فـ بلادي المغرب وبخصوص مدينة فاس...'}`,
+      level2StarterDe:
+        'Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat mir davon erzählt. In meinem Heimatland Marokko ist es oft so, dass ... [Verb am Ende].',
+      level3FullDe: expected.targetSentenceDe,
+      rescueInterruptPhraseDe,
+      rescuePartnerPhraseDe
+    };
+  }
+
+  if (ctx.mode === 'teil1') {
+    if (ctx.roundNumber <= 1) {
+      return {
+        level1Darija:
+          '💡 قدم راسك دابا: محمد الجبوري، 22 عام من فاس، الباك فـ الفيزيك والشيمي، والإجازة فـ الاقتصاد (Bachelor Wirtschaft)!',
+        level2StarterDe:
+          'Guten Tag! Mein Name ist Mohammed El Jebouri, ich bin 22 Jahre alt und komme aus Fès in Marokko. Ich habe mein Abitur in ... und meinen Bachelor in ... abgeschlossen.',
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    if (ctx.roundNumber === 2) {
+      return {
+        level1Darija:
+          '💡 هضر على رحلة بين الويدان (Bin el Ouidane): مشيتي مع صحابك د الجامعة، خيمتو فـ الطبيعة، درتو جولة بالفلوكة فـ البحيرة الزرقة وارتاحيتو من ستريس القراية!',
+        level2StarterDe:
+          'Ich möchte heute über meine unvergessliche Reise nach Bin el Ouidane sprechen. Dort habe ich mit meinen Freunden ...',
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    if (ctx.roundNumber === 3) {
+      return {
+        level1Darija: '💡 جاوب الممتحن: جلسنا فـ بين الويدان ويكاند كامل (3 أيام) مع أعز الأصدقاء مور الامتحانات!',
+        level2StarterDe: 'Ich habe dort ein ganzes Wochenende, also drei Tage, mit meinen Studienfreunden verbracht, weil ...',
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    return {
+      level1Darija: '💡 جاوب الممتحن: الرحلة ما كانتش غالية حيت مشينا فـ الكار، نعسنا فـ الخيمة وطيبنا ماكلتنا بوحدنا!',
+      level2StarterDe: 'Nein, die Reise war überhaupt nicht teuer. Da wir zusammen mit dem Bus gefahren sind, ...',
+      level3FullDe: expected.targetSentenceDe,
+      rescueInterruptPhraseDe,
+      rescuePartnerPhraseDe
+    };
+  }
+
+  if (ctx.mode === 'teil3' && ctx.teil3Topic) {
+    const t = ctx.teil3Topic;
+    const points = ctx.teil3AllPoints || [];
+    const visited = ctx.teil3VisitedPoints || [];
+    if (ctx.roundNumber <= 1) {
+      return {
+        level1Darija: `💡 ابدأ التخطيط لموضوع „${t.titleDarija}“: قول الدخلة واقترح الفكرة الأولى الخاصة بالموضوع (${t.herzPoint1Darija})!`,
+        level2StarterDe: `Wie du weißt, planen wir ja zusammen ${t.dkhlaSlotAccusative}. Zuerst würde ich vorschlagen, dass wir ... [Verb am Ende].`,
+        level3FullDe: expected.targetSentenceDe,
+        rescueInterruptPhraseDe,
+        rescuePartnerPhraseDe
+      };
+    }
+    const nextPoint = points.find((p) => !visited.includes(p.number)) || points[0];
+    return {
+      level1Darija: nextPoint
+        ? `💡 جبد دابا جوكر التخطيط #${nextPoint.number} (${nextPoint.titleDarija}): سول صاحبك سؤال غير مباشر وعطي اقتراحك!`
+        : `💡 قول دابا الخاتمة ديال التخطيط: هضرنا على كلشي وغادي تكون ${t.titleDarija} واعرة!`,
+      level2StarterDe: nextPoint
+        ? `${nextPoint.indirectB2Question.split(',')[0]}, ... [Verb am Ende]? Ich schlage vor, dass wir ...`
+        : `Super, dann haben wir jetzt alle wichtigen Punkte besprochen. Das wird bestimmt ${t.khatimaSlotNominative}!`,
+      level3FullDe: expected.targetSentenceDe,
+      rescueInterruptPhraseDe,
+      rescuePartnerPhraseDe
+    };
+  }
+
+  // Interview mode
+  const qa = ctx.interviewQuestion;
+  return {
+    level1Darija: qa
+      ? `💡 نصيحة الموارد البشرية لسؤال #${qa.id}: ${qa.darijaCoachTip}`
+      : '💡 ربط ما بين الباك فيزيك/شيمي (التحليل المنطقي) والإجازة فـ الاقتصاد (Controlling & Finanzen)!',
+    level2StarterDe: qa
+      ? `${qa.strongB2Answer.split(/\s+/).slice(0, 7).join(' ')} ...`
+      : 'Mein Name ist Mohammed El Jebouri. Durch mein Abitur in Physik und Chemie sowie meinen Bachelor in Wirtschaft ...',
+    level3FullDe: expected.targetSentenceDe,
+    rescueInterruptPhraseDe,
+    rescuePartnerPhraseDe
+  };
+}
+
+export interface CallTurnReviewItem {
+  turnIndex: number;
+  userSaidDe: string;
+  targetSentenceDe: string;
+  scoreOutOf60: number;
+  cefrLevel: string;
+  darijaCritique: string;
+  verbAtEndCorrect: boolean;
+}
+
+export interface PostCallDiagnosticReport {
+  durationSeconds: number;
+  durationFormatted: string;
+  totalSpokenWords: number;
+  fluencyWordsPerMinute: number;
+  ausdruck: number;
+  aufgabe: number;
+  korrektheit: number;
+  aussprache: number;
+  totalOutOf60: number;
+  passed: boolean;
+  cefrOverall: 'A1' | 'A2' | 'B1' | 'B2';
+  summaryDarija: string;
+  turnReviews: CallTurnReviewItem[];
+}
+
+/**
+ * Builds the comprehensive Post-Call Exam Report Card (تقرير المكالمة الشفوية)
+ * with Call Duration, Fluency Speed (WPM), Official 60-Point TELC Breakdown,
+ * and sentence-by-sentence comparison.
+ */
+export function buildPostCallDiagnosticReport(params: {
+  durationSeconds: number;
+  turns: Array<{
+    userSaidDe: string;
+    targetSentenceDe: string;
+    scoreOutOf60: number;
+    cefrLevel: string;
+    darijaCritique: string;
+    verbAtEndCorrect: boolean;
+  }>;
+}): PostCallDiagnosticReport {
+  const safeDuration = Math.max(1, Math.round(params.durationSeconds));
+  const mins = Math.floor(safeDuration / 60);
+  const secs = safeDuration % 60;
+  const durationFormatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+  const totalSpokenWords = params.turns.reduce((acc, t) => {
+    const words = t.userSaidDe.trim().split(/\s+/).filter(Boolean);
+    return acc + words.length;
+  }, 0);
+
+  const fluencyWordsPerMinute =
+    totalSpokenWords > 0
+      ? Math.min(180, Math.max(25, Math.round((totalSpokenWords / Math.max(10, safeDuration)) * 60)))
+      : 0;
+
+  if (params.turns.length === 0) {
+    return {
+      durationSeconds: safeDuration,
+      durationFormatted,
+      totalSpokenWords: 0,
+      fluencyWordsPerMinute: 0,
+      ausdruck: 0,
+      aufgabe: 0,
+      korrektheit: 0,
+      aussprache: 0,
+      totalOutOf60: 0,
+      passed: false,
+      cefrOverall: 'A1',
+      summaryDarija: 'ما نطقتي حتى جملة كاملة فـ هاد المكالمة! عاود اتصل بالبارتنر وهضر بالألمانية باش تاخد التقرير الكامل ديال 60 نقطة.',
+      turnReviews: []
+    };
+  }
+
+  const avgScore =
+    params.turns.reduce((sum, t) => sum + t.scoreOutOf60, 0) / params.turns.length;
+  const verbCorrectRatio =
+    params.turns.filter((t) => t.verbAtEndCorrect).length / params.turns.length;
+
+  const ausdruck = Math.min(15, Math.max(0, Math.round((avgScore / 60) * 15)));
+  const aufgabe = Math.min(15, Math.max(0, Math.round((avgScore / 60) * 15)));
+  const korrektheit = Math.min(
+    15,
+    Math.max(0, Math.round(((avgScore / 60) * 0.7 + verbCorrectRatio * 0.3) * 15))
+  );
+  const aussprache = Math.min(15, Math.max(0, Math.round((avgScore / 60) * 15)));
+  const totalOutOf60 = ausdruck + aufgabe + korrektheit + aussprache;
+  const passed = totalOutOf60 >= 36;
+
+  let cefrOverall: 'A1' | 'A2' | 'B1' | 'B2' = 'A1';
+  if (totalOutOf60 >= 46) cefrOverall = 'B2';
+  else if (totalOutOf60 >= 36) cefrOverall = 'B1';
+  else if (totalOutOf60 >= 20) cefrOverall = 'A2';
+
+  const summaryDarija = passed
+    ? `🎉 تبارك الله عليك أ محمد! دوزتي المكالمة الشفوية بنجاح (${totalOutOf60}/60 Pkt. • Niveau ${cefrOverall}) بسرعة طلاقة ${fluencyWordsPerMinute} كلمة/دقيقة!`
+    : `💪 جبتي ${totalOutOf60}/60 Pkt. (خاصك 36/60 للنجاح). راجع الجمل فـ الجدول لتحت وركز على حطان الفعل المصرف فـ آخر الجملة مورا dass!`;
+
+  return {
+    durationSeconds: safeDuration,
+    durationFormatted,
+    totalSpokenWords,
+    fluencyWordsPerMinute,
+    ausdruck,
+    aufgabe,
+    korrektheit,
+    aussprache,
+    totalOutOf60,
+    passed,
+    cefrOverall,
+    summaryDarija,
+    turnReviews: params.turns.map((t, i) => ({
+      turnIndex: i + 1,
+      ...t
+    }))
+  };
+}
+
