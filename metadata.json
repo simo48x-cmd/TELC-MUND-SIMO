@@ -1,0 +1,12 @@
+{
+  "name": "TELC B2 Mündlich & Karriere Master Pro",
+  "description": "Interactive Ping-Pong Slot-Filler Studio, A0/A1 to B2 Speaking Engine, All 46 Teil 2 & 48 Teil 3 Exams, 60-Day Plan, Wirtschaft Job Interview Simulator & 3D XR Prüfungsraum for Mohammed El Jebouri.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "entities": {
+    "UserProgress": {
+      "title": "UserProgress",
+      "description": "Tracks Mohammed El Jebouri's TELC B2 Mündlich progress, XP, streak, mastered slots, certified CEFR levels, and completed study days.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the learner",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "currentLevel": {
+          "type": "string",
+          "description": "Current active CEFR level",
+          "enum": ["A1", "A2", "B1", "B2"]
+        },
+        "xp": {
+          "type": "integer",
+          "description": "Total experience points earned"
+        },
+        "streak": {
+          "type": "integer",
+          "description": "Daily speaking streak count"
+        },
+        "planMode": {
+          "type": "string",
+          "description": "Selected roadmap duration",
+          "enum": ["45", "60"]
+        },
+        "theme": {
+          "type": "string",
+          "description": "Selected studio visual theme",
+          "enum": ["midnight", "paper", "daylight"]
+        },
+        "masteredSlotIds": {
+          "type": "array",
+          "description": "Bounded list of mastered Ping-Pong slot identifiers (up to 300)",
+          "maxLength": 300
+        },
+        "completedDays": {
+          "type": "array",
+          "description": "Bounded list of completed study days (1 to 60)",
+          "maxLength": 60
+        },
+        "certifiedLevels": {
+          "type": "array",
+          "description": "Bounded list of passed CEFR level certifications",
+          "maxLength": 4
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": [
+        "ownerId",
+        "displayName",
+        "currentLevel",
+        "xp",
+        "streak",
+        "planMode",
+        "theme",
+        "masteredSlotIds",
+        "completedDays",
+        "certifiedLevels",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PracticeSession": {
+      "title": "PracticeSession",
+      "description": "Stores a completed speaking or slot-filling practice session for a specific exam.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "moduleType": {
+          "type": "string",
+          "description": "Module practiced",
+          "enum": ["teil1", "teil2", "teil3", "karriere", "cert"]
+        },
+        "examId": {
+          "type": "string",
+          "description": "Identifier of the exam or topic",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Score achieved out of 60"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Feedback summary or scratchpad note",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        }
+      },
+      "required": [
+        "ownerId",
+        "moduleType",
+        "examId",
+        "score",
+        "notes",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/userProgress/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProgress"
+      },
+      "description": "Stores per-user progress document keyed by user UID."
+    },
+    "/userProgress/{userId}/sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/PracticeSession"
+      },
+      "description": "Subcollection of speaking and slot-filler sessions belonging to a user."
+    }
+  }
+}

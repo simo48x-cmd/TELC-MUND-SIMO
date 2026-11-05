@@ -1,0 +1,159 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && request.auth.uid == userId;
+    }
+
+    function isValidStringList(arr, maxLen) {
+      return arr is list
+        && arr.size() <= maxLen
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 64));
+    }
+
+    function isValidIntList(arr, maxLen) {
+      return arr is list
+        && arr.size() <= maxLen
+        && (arr.size() == 0 || (arr[0] is int && arr[0] >= 1 && arr[0] <= 60));
+    }
+
+    function isValidUserProgress(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'displayName', 'currentLevel', 'xp', 'streak',
+          'planMode', 'theme', 'masteredSlotIds', 'completedDays',
+          'certifiedLevels', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'displayName', 'currentLevel', 'xp', 'streak',
+          'planMode', 'theme', 'masteredSlotIds', 'completedDays',
+          'certifiedLevels', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 100
+        && data.currentLevel is string
+        && data.currentLevel.size() == 2
+        && (data.currentLevel in ['A1', 'A2', 'B1', 'B2'])
+        && data.xp is int
+        && data.xp >= 0
+        && data.xp <= 1000000
+        && data.streak is int
+        && data.streak >= 0
+        && data.streak <= 3650
+        && data.planMode is string
+        && data.planMode.size() == 2
+        && (data.planMode in ['45', '60'])
+        && data.theme is string
+        && data.theme.size() <= 16
+        && (data.theme in ['midnight', 'paper', 'daylight'])
+        && isValidStringList(data.masteredSlotIds, 300)
+        && isValidIntList(data.completedDays, 60)
+        && isValidStringList(data.certifiedLevels, 4)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPracticeSession(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'moduleType', 'examId', 'score', 'notes', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'moduleType', 'examId', 'score', 'notes', 'createdAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && data.moduleType is string
+        && data.moduleType.size() <= 16
+        && (data.moduleType in ['teil1', 'teil2', 'teil3', 'karriere', 'cert'])
+        && data.examId is string
+        && data.examId.size() >= 1
+        && data.examId.size() <= 64
+        && data.examId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.score is int
+        && data.score >= 0
+        && data.score <= 60
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.createdAt is timestamp;
+    }
+
+    match /userProgress/{userId} {
+      allow get: if isVerifiedOwner(userId) && isValidId(userId);
+      allow list: if isVerifiedOwner(userId) && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserProgress(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserProgress(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'currentLevel', 'xp', 'streak', 'planMode',
+            'theme', 'masteredSlotIds', 'completedDays', 'certifiedLevels', 'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      match /sessions/{sessionId} {
+        allow get: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(sessionId)
+          && exists(/databases/$(database)/documents/userProgress/$(userId))
+          && get(/databases/$(database)/documents/userProgress/$(userId)).data.ownerId == request.auth.uid;
+
+        allow list: if isVerifiedOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(sessionId)
+          && isValidPracticeSession(incoming(), userId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/userProgress/$(userId))
+          && get(/databases/$(database)/documents/userProgress/$(userId)).data.ownerId == request.auth.uid;
+
+        allow update, delete: if false;
+      }
+    }
+  }
+}
