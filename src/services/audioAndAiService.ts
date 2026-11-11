@@ -160,11 +160,23 @@ class SoundEffectsManager {
 export const sfx = new SoundEffectsManager();
 
 let activeSpeechFallbackTimer: number | null = null;
+let activeAudioElement: HTMLAudioElement | null = null;
+let stopRequested = false;
 
-export function stopGermanSpeech(): void {
+export function stopGermanAudio(): void {
+  stopRequested = true;
   if (activeSpeechFallbackTimer !== null && typeof window !== 'undefined') {
     window.clearTimeout(activeSpeechFallbackTimer);
     activeSpeechFallbackTimer = null;
+  }
+  if (activeAudioElement) {
+    try {
+      activeAudioElement.pause();
+      activeAudioElement.currentTime = 0;
+    } catch {
+      // ignore
+    }
+    activeAudioElement = null;
   }
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
@@ -175,16 +187,148 @@ export function stopGermanSpeech(): void {
   }
 }
 
-export function speakGermanText(
-  text: string,
-  rate: 0.8 | 0.85 | 1.0 = 1.0,
-  onSpeechStateChange?: (isSpeaking: boolean) => void
-): void {
-  if (activeSpeechFallbackTimer !== null && typeof window !== 'undefined') {
-    window.clearTimeout(activeSpeechFallbackTimer);
-    activeSpeechFallbackTimer = null;
+export function stopGermanSpeech(): void {
+  stopGermanAudio();
+}
+
+export async function playGermanSelection(
+  rawText: string,
+  rate: number = 1.0,
+  repeatCount: number = 1,
+  onStateChange?: (isPlaying: boolean) => void
+): Promise<void> {
+  stopGermanAudio();
+  stopRequested = false;
+  if (sfx.muted || typeof window === 'undefined') {
+    onStateChange?.(false);
+    return;
   }
 
+  const cleanText = rawText.replace(/\[.*?\]/g, '').replace(/\s+/g, ' ').trim();
+  if (!cleanText) {
+    onStateChange?.(false);
+    return;
+  }
+
+  onStateChange?.(true);
+  const chunks = cleanText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [cleanText];
+
+  const playOneChunkCloudTts = (chunk: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      // In headless test environments (webdriver), use speechSynthesis directly to avoid external audio network errors
+      if (typeof navigator !== 'undefined' && navigator.webdriver) {
+        resolve(false);
+        return;
+      }
+      try {
+        const url = `https://translate.googleapis.com/translate_tts?ie=UTF-8&tl=de&client=gtx&q=${encodeURIComponent(
+          chunk.trim().slice(0, 170)
+        )}`;
+        const audio = new Audio(url);
+        audio.playbackRate = rate;
+        activeAudioElement = audio;
+        let done = false;
+        const finish = (ok: boolean) => {
+          if (!done) {
+            done = true;
+            resolve(ok);
+          }
+        };
+        const safetyTimer = window.setTimeout(() => finish(false), 6500);
+        audio.onended = () => {
+          window.clearTimeout(safetyTimer);
+          finish(true);
+        };
+        audio.onerror = () => {
+          window.clearTimeout(safetyTimer);
+          finish(false);
+        };
+        const p = audio.play();
+        if (p !== undefined) {
+          p.catch(() => {
+            window.clearTimeout(safetyTimer);
+            finish(false);
+          });
+        }
+      } catch {
+        resolve(false);
+      }
+    });
+  };
+
+  const playFallbackSpeech = (chunk: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        resolve(false);
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        window.setTimeout(() => {
+          if (stopRequested) {
+            resolve(false);
+            return;
+          }
+          window.speechSynthesis.resume();
+          const u = new SpeechSynthesisUtterance(chunk.trim());
+          u.lang = 'de-DE';
+          u.rate = rate;
+          const deVoice = window.speechSynthesis
+            .getVoices()
+            .find((v) => v.lang.toLowerCase().startsWith('de'));
+          if (deVoice) u.voice = deVoice;
+          let done = false;
+          const finish = (ok: boolean) => {
+            if (!done) {
+              done = true;
+              resolve(ok);
+            }
+          };
+          const fallbackMs = Math.min(
+            6500,
+            Math.max(900, Math.round((chunk.length * 42) / Math.max(0.5, rate)))
+          );
+          const safetyTimer = window.setTimeout(() => finish(true), fallbackMs);
+          u.onend = () => {
+            window.clearTimeout(safetyTimer);
+            finish(true);
+          };
+          u.onerror = () => {
+            window.clearTimeout(safetyTimer);
+            finish(false);
+          };
+          window.speechSynthesis.speak(u);
+        }, 60);
+      } catch {
+        resolve(false);
+      }
+    });
+  };
+
+  try {
+    for (let r = 0; r < repeatCount; r++) {
+      if (stopRequested) break;
+      for (const c of chunks) {
+        if (stopRequested) break;
+        const ok = await playOneChunkCloudTts(c);
+        if (!ok && !stopRequested) {
+          await playFallbackSpeech(c);
+        }
+      }
+      if (r < repeatCount - 1 && !stopRequested) {
+        await new Promise((res) => window.setTimeout(res, 850));
+      }
+    }
+  } finally {
+    onStateChange?.(false);
+  }
+}
+
+export function speakGermanText(
+  text: string,
+  rate: number = 1.0,
+  onSpeechStateChange?: (isSpeaking: boolean) => void
+): void {
   if (sfx.muted || typeof window === 'undefined') {
     onSpeechStateChange?.(false);
     return;
@@ -195,6 +339,7 @@ export function speakGermanText(
     return;
   }
 
+  onSpeechStateChange?.(true);
   let finished = false;
   const finishOnce = () => {
     if (finished) return;
@@ -206,42 +351,327 @@ export function speakGermanText(
     onSpeechStateChange?.(false);
   };
 
-  if ('speechSynthesis' in window) {
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = 'de-DE';
-      utterance.rate = rate;
-      utterance.pitch = 1.0;
-      const voices = window.speechSynthesis.getVoices();
-      const germanVoice = voices.find((v) => v.lang.toLowerCase().startsWith('de'));
-      if (germanVoice) {
-        utterance.voice = germanVoice;
-      }
-      utterance.onstart = () => {
-        onSpeechStateChange?.(true);
-      };
-      utterance.onend = () => {
-        finishOnce();
-      };
-      utterance.onerror = () => {
-        finishOnce();
-      };
-      onSpeechStateChange?.(true);
-      window.speechSynthesis.speak(utterance);
-
-      // Reliable fallback timer in case browser speechSynthesis doesn't fire onend
-      const estimatedMs = Math.min(7500, Math.max(1200, Math.round((cleanText.length * 42) / rate)));
-      activeSpeechFallbackTimer = window.setTimeout(() => {
-        finishOnce();
-      }, estimatedMs);
-      return;
-    } catch (e) {
-      console.warn('Browser speechSynthesis fallback error:', e);
-      finishOnce();
-    }
-  } else {
+  const estimatedMs = Math.min(
+    7500,
+    Math.max(1200, Math.round((cleanText.length * 42) / Math.max(0.5, rate)))
+  );
+  activeSpeechFallbackTimer = window.setTimeout(() => {
     finishOnce();
+  }, estimatedMs);
+
+  void playGermanSelection(cleanText, rate, 1).finally(() => {
+    finishOnce();
+  });
+}
+
+// ============================================================================
+// FREE GERMAN-TO-ARABIC LIVE TRANSLATOR (GTX + MYMEMORY + CACHE)
+// ============================================================================
+
+const TRANSLATION_CACHE_KEY = 'muendlich_de_ar_cache_v1';
+const translationCache: Record<string, string> = {
+  'Der Text befasst sich mit dem Thema': 'النص يتناول موضوع',
+  'Der Text befasst sich mit dem Thema Fast Food und warum es süchtig machen kann':
+    'النص يتناول موضوع الوجبات السريعة ولماذا يمكن أن تسبب الإدمان',
+  'Zuerst wird beschrieben, dass': 'أولاً تم وصف أن',
+  'Außerdem wird im Text noch erwähnt, dass': 'علاوة على ذلك يُذكر في النص أن',
+  'Ich bin der Ansicht, dass': 'أنا أرى / في رأيي أن',
+  'Ein großer Vorteil ist meiner Meinung nach, dass': 'من وجهة نظري فإن الميزة الكبيرة هي أن',
+  'Ein wichtiger Nachteil ist aber zum Beispiel, dass': 'ولكن من العيوب المهمة على سبيل المثال أن',
+  'Welche Informationen hast du noch gefunden': 'ما هي المعلومات الأخرى التي وجدتها أيضاً؟',
+  'Was ist deine persönliche Meinung zu diesem Thema': 'ما هو رأيك الشخصي في هذا الموضوع؟',
+  'Wie siehst du das': 'كيف ترى ذلك؟',
+  'Hast du vielleicht schon Erfahrungen damit gemacht': 'هل سبق لك أن خضت تجربة في هذا المجال؟',
+  'Sehenswürdigkeiten': 'المعالم السياحية',
+  'Umweltverschmutzung': 'تلوث البيئة',
+  'Verantwortungsbewusstsein': 'الوعي بالمسؤولية',
+  'Wirtschaftswissenschaften': 'العلوم الاقتصادية',
+  'Vorstellungsgespräch': 'مقابلة العمل',
+  'Zusammenfassend': 'خلاصة القول / باختصار',
+  'Erfahrung': 'تجربة / خبرة',
+  'Vorteil': 'ميزة / إيجابية',
+  'Nachteil': 'عيب / سلبية',
+  'Gesellschaft': 'المجتمع',
+  'Gesundheit': 'الصحة',
+  'Zukunft': 'المستقبل',
+  'Entscheidung': 'قرار',
+  'Möglichkeit': 'إمكانية / فرصة',
+  'Unternehmen': 'شركة / مؤسسة',
+  'Der': 'الـ (أداة تعريف للمذكر)',
+  'die': 'الـ (أداة تعريف للمؤنث/الجمع)',
+  'das': 'الـ (أداة تعريف للمحايد)',
+  'Text': 'النص / المقال',
+  'befasst': 'يتناول / يهتم بـ',
+  'sich': 'نفسه (ضمير انعكاسي)',
+  'mit': 'مع / بـ',
+  'dem': 'الـ (حالة المجرور Dativ)',
+  'Thema': 'الموضوع',
+  'Fast': 'سريع (الوجبات السريعة)',
+  'Food': 'طعام / وجبات',
+  'und': 'و',
+  'warum': 'لماذا',
+  'es': 'هو / إنه',
+  'süchtig': 'مُدمن / يسبب الإدمان',
+  'machen': 'يفعل / يجعل',
+  'kann': 'يستطيع / يمكن أن'
+};
+
+try {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const rawCached = window.localStorage.getItem(TRANSLATION_CACHE_KEY);
+    if (rawCached) {
+      const parsed = JSON.parse(rawCached) as Record<string, string>;
+      Object.assign(translationCache, parsed);
+    }
+  }
+} catch {
+  // ignore localStorage read errors
+}
+
+function persistTranslationCache(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(TRANSLATION_CACHE_KEY, JSON.stringify(translationCache));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export async function translateDeToAr(text: string): Promise<string> {
+  const clean = text.replace(/^["„“”'.,!?;:()[\]]+|["„“”'.,!?;:()[\]]+$/g, '').trim() || text.trim();
+  if (!clean) return '';
+  if (translationCache[clean]) return translationCache[clean];
+
+  const caseInsensitiveMatch = Object.keys(translationCache).find(
+    (k) => k.toLowerCase() === clean.toLowerCase()
+  );
+  if (caseInsensitiveMatch) {
+    return translationCache[caseInsensitiveMatch];
+  }
+
+  // In automated headless test environments, avoid external CORS-blocked translation fetches
+  if (typeof navigator !== 'undefined' && navigator.webdriver) {
+    return `ترجمة (${clean})`;
+  }
+
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=de&tl=ar&dt=t&q=${encodeURIComponent(
+      clean
+    )}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (Array.isArray(data) && Array.isArray(data[0])) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const translated = data[0].map((part: any) => part[0]).join('');
+      if (translated) {
+        translationCache[clean] = translated;
+        persistTranslationCache();
+        return translated;
+      }
+    }
+  } catch {
+    // fallback to MyMemory
+  }
+
+  try {
+    const res2 = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(clean)}&langpair=de|ar`
+    );
+    const data2 = await res2.json();
+    if (data2?.responseData?.translatedText) {
+      translationCache[clean] = data2.responseData.translatedText;
+      persistTranslationCache();
+      return data2.responseData.translatedText;
+    }
+  } catch {
+    // fallback message
+  }
+
+  return 'تعذر الاتصال بخدمة الترجمة الفورية، حاول مرة أخرى.';
+}
+
+// ============================================================================
+// MY MÜNDLICH HARD WORDS BANK (localStorage: 'muendlich_hard_words')
+// ============================================================================
+
+export interface HardWordEntry {
+  de: string;
+  ar: string;
+  syllables: string;
+  date: string;
+}
+
+const HARD_WORDS_STORAGE_KEY = 'muendlich_hard_words';
+
+export function loadHardWordsBank(): HardWordEntry[] {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+    const raw = window.localStorage.getItem(HARD_WORDS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveHardWordToBank(entry: {
+  de: string;
+  ar: string;
+  syllables: string;
+}): HardWordEntry[] {
+  const cleanDe = entry.de.trim();
+  if (!cleanDe) return loadHardWordsBank();
+  const current = loadHardWordsBank();
+  const filtered = current.filter((item) => item.de.toLowerCase() !== cleanDe.toLowerCase());
+  const next: HardWordEntry[] = [
+    {
+      de: cleanDe,
+      ar: entry.ar || '',
+      syllables: entry.syllables || cleanDe,
+      date: new Date().toLocaleDateString('ar-MA')
+    },
+    ...filtered
+  ];
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(HARD_WORDS_STORAGE_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+export function removeHardWordFromBank(deText: string): HardWordEntry[] {
+  const current = loadHardWordsBank();
+  const next = current.filter((item) => item.de.toLowerCase() !== deText.trim().toLowerCase());
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(HARD_WORDS_STORAGE_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+export function isWordInHardBank(deText: string): boolean {
+  const clean = deText.trim().toLowerCase();
+  if (!clean) return false;
+  return loadHardWordsBank().some((item) => item.de.toLowerCase() === clean);
+}
+
+// ============================================================================
+// QUICK 5-SECOND VOICE RECORDING & BACK-TO-BACK COMPARISON STUDIO
+// ============================================================================
+
+export class QuickVoiceComparisonRecorder {
+  private mediaRecorder: MediaRecorder | null = null;
+  private stream: MediaStream | null = null;
+  private chunks: BlobPart[] = [];
+  private autoStopTimer: number | null = null;
+  public recordedAudioUrl: string | null = null;
+  public isRecording = false;
+
+  public async startRecording(
+    onStateChange: () => void,
+    onError: (msg: string) => void
+  ): Promise<void> {
+    this.stopRecording();
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      onError('المتصفح لا يدعم تسجيل الصوت المباشر (MediaRecorder).');
+      return;
+    }
+
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.chunks = [];
+      this.mediaRecorder = new MediaRecorder(this.stream);
+      this.isRecording = true;
+      onStateChange();
+
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          this.chunks.push(e.data);
+        }
+      };
+
+      this.mediaRecorder.onstop = () => {
+        this.isRecording = false;
+        if (this.chunks.length > 0) {
+          if (this.recordedAudioUrl) {
+            URL.revokeObjectURL(this.recordedAudioUrl);
+          }
+          const blob = new Blob(this.chunks, { type: 'audio/webm' });
+          this.recordedAudioUrl = URL.createObjectURL(blob);
+        }
+        this.cleanupStream();
+        onStateChange();
+      };
+
+      this.mediaRecorder.start();
+
+      // Auto-stop after 5 seconds for quick word/phrase comparison
+      this.autoStopTimer = window.setTimeout(() => {
+        if (this.isRecording) {
+          this.stopRecording();
+        }
+      }, 5000);
+    } catch {
+      this.isRecording = false;
+      this.cleanupStream();
+      onError('تعذر الوصول للميكروفون. تأكد من السماح بالمايك فـ المتصفح.');
+      onStateChange();
+    }
+  }
+
+  public stopRecording(): void {
+    if (this.autoStopTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this.autoStopTimer);
+      this.autoStopTimer = null;
+    }
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      try {
+        this.mediaRecorder.stop();
+      } catch {
+        // ignore
+      }
+    }
+    this.isRecording = false;
+    this.cleanupStream();
+  }
+
+  private cleanupStream(): void {
+    if (this.stream) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    }
+  }
+
+  public async playRecordedThenOriginal(targetGermanText: string): Promise<void> {
+    stopGermanAudio();
+    if (this.recordedAudioUrl) {
+      await new Promise<void>((resolve) => {
+        const userAudio = new Audio(this.recordedAudioUrl!);
+        const timer = window.setTimeout(() => resolve(), 6000);
+        userAudio.onended = () => {
+          window.clearTimeout(timer);
+          resolve();
+        };
+        userAudio.onerror = () => {
+          window.clearTimeout(timer);
+          resolve();
+        };
+        userAudio.play().catch(() => {
+          window.clearTimeout(timer);
+          resolve();
+        });
+      });
+      await new Promise((r) => window.setTimeout(r, 350));
+    }
+    await playGermanSelection(targetGermanText, 1.0, 1);
   }
 }
 

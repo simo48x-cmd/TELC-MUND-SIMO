@@ -12,7 +12,11 @@ import {
   extractFirstFourWordsHint,
   getVoiceCallOpeningGreeting,
   getTeleprompterWhisperLevels,
-  buildPostCallDiagnosticReport
+  buildPostCallDiagnosticReport,
+  splitGermanWordIntoSyllables,
+  buildSelectionSyllableBreakdown,
+  splitGermanTextIntoSentences,
+  extractCleanWordsFromSelection
 } from './pingPongLogic';
 
 test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-clause', () => {
@@ -202,3 +206,30 @@ test('getVoiceCallOpeningGreeting, getTeleprompterWhisperLevels, and buildPostCa
   assert.equal(report.passed, true);
   assert.equal(report.turnReviews.length, 1);
 });
+
+test('splitGermanWordIntoSyllables, buildSelectionSyllableBreakdown, splitGermanTextIntoSentences, and extractCleanWordsFromSelection work accurately', () => {
+  assert.equal(splitGermanWordIntoSyllables('Sehenswürdigkeiten'), 'Se•hens•wür•dig•kei•ten');
+  assert.equal(splitGermanWordIntoSyllables('Umweltverschmutzung'), 'Um•welt•ver•schmut•zung');
+  assert.equal(
+    splitGermanWordIntoSyllables('Verantwortungsbewusstsein'),
+    'Ver•ant•wor•tungs•be•wusst•sein'
+  );
+  assert.equal(splitGermanWordIntoSyllables('Haus'), 'Haus');
+
+  const breakdown = buildSelectionSyllableBreakdown(
+    'Die Sehenswürdigkeiten und Umweltverschmutzung sind wichtig.'
+  );
+  assert.equal(breakdown.length, 2);
+  assert.equal(breakdown[0].syllables, 'Se•hens•wür•dig•kei•ten');
+  assert.equal(breakdown[1].syllables, 'Um•welt•ver•schmut•zung');
+
+  const sentences = splitGermanTextIntoSentences(
+    'Der Text befasst sich mit dem Thema Fast Food. Zuerst wird beschrieben, dass es ungesund ist! Welche Informationen hast du noch?'
+  );
+  assert.equal(sentences.length, 3);
+  assert.equal(sentences[0], 'Der Text befasst sich mit dem Thema Fast Food.');
+
+  const words = extractCleanWordsFromSelection('Der Text befasst sich!');
+  assert.deepEqual(words, ['Der', 'Text', 'befasst', 'sich']);
+});
+

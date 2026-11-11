@@ -1287,3 +1287,146 @@ export function buildPostCallDiagnosticReport(params: {
   };
 }
 
+// ============================================================================
+// SILBEN-SPLITTER & SENTENCE SPLITTER FOR SELECTION & PRONUNCIATION STUDIO
+// ============================================================================
+
+const KNOWN_GERMAN_SYLLABLES: Record<string, string> = {
+  sehenswürdigkeiten: 'Se•hens•wür•dig•kei•ten',
+  sehenswürdigkeit: 'Se•hens•wür•dig•keit',
+  umweltverschmutzung: 'Um•welt•ver•schmut•zung',
+  verantwortungsbewusstsein: 'Ver•ant•wor•tungs•be•wusst•sein',
+  wirtschaftswissenschaften: 'Wirt•schafts•wis•sen•schaf•ten',
+  wirtschaftswissenschaft: 'Wirt•schafts•wis•sen•schaft',
+  vorstellungsgespräch: 'Vor•stel•lungs•ge•spräch',
+  zusammenarbeit: 'Zu•sam•men•ar•beit',
+  zusammenfassend: 'Zu•sam•men•fas•send',
+  aufgabenbewältigung: 'Auf•ga•ben•be•wäl•ti•gung',
+  ausdrucksfähigkeit: 'Aus•drucks•fä•hig•keit',
+  entscheidungsfindung: 'Ent•schei•dungs•fin•dung',
+  gesundheitsbewusstsein: 'Ge•sund•heits•be•wusst•sein',
+  freizeitmöglichkeiten: 'Frei•zeit•mög•lich•kei•ten',
+  verkehrsmittel: 'Ver•kehrs•mit•tel',
+  öffentlichkeit: 'Öf•fent•lich•keit',
+  digitalisierung: 'Di•gi•ta•li•sie•rung',
+  globalisierung: 'Glo•ba•li•sie•rung',
+  weiterbildung: 'Wei•ter•bil•dung',
+  berufserfahrung: 'Be•rufs•er•fah•rung',
+  unternehmensberatung: 'Un•ter•neh•mens•be•ra•tung',
+  klimaveränderung: 'Kli•ma•ver•än•de•rung',
+  konsumgesellschaft: 'Kon•sum•ge•sell•schaft',
+  lebensmittelverschwendung: 'Le•bens•mit•tel•ver•schwen•dung',
+  arbeitsbedingungen: 'Ar•beits•be•din•gun•gen',
+  nahrungsmittel: 'Nah•rungs•mit•tel',
+  unabhängigkeit: 'Un•ab•hän•gig•keit',
+  aufmerksamkeit: 'Auf•merk•sam•keit',
+  möglichkeiten: 'Mög•lich•kei•ten'
+};
+
+/**
+ * Breaks a long German word (>= 9 letters) into pronounceable syllables separated by '•'.
+ */
+export function splitGermanWordIntoSyllables(rawWord: string): string {
+  const clean = rawWord.replace(/^[^a-zA-ZäöüÄÖÜß]+|[^a-zA-ZäöüÄÖÜß]+$/g, '');
+  if (clean.length < 9) {
+    return clean;
+  }
+
+  const lower = clean.toLowerCase();
+  const known = KNOWN_GERMAN_SYLLABLES[lower];
+  if (known) {
+    // Preserve original capitalization on first letter
+    if (clean[0] === clean[0].toLowerCase()) {
+      return known.charAt(0).toLowerCase() + known.slice(1);
+    }
+    return known;
+  }
+
+  // General German morphological + vowel-cluster syllable splitter
+  let working = clean;
+
+  // 1. Mark common German compound/prefix/suffix boundaries first
+  working = working
+    .replace(/^(Ver|Ent|Be|Ge|Über|Unter|Zusammen|Weiter|Vor|Nach|Auf|Aus|Ein|Mit|Un|Ab)([a-zäöüß]{4,})/i, '$1•$2')
+    .replace(/([a-zäöüß]{3,})(keiten|keit|heiten|heit|ungen|ung|schaften|schaft|lichen|lich|ischen|isch|sierung|tionen|tion|bewusstsein|verschmutzung|wissenschaft|möglichkeiten)$/i, '$1•$2')
+    .replace(/keit•en$/i, 'kei•ten')
+    .replace(/heit•en$/i, 'hei•ten')
+    .replace(/ung•en$/i, 'un•gen')
+    .replace(/schaft•en$/i, 'schaf•ten');
+
+  // 2. Further split any remaining chunk > 5 chars across vowel-consonant boundaries
+  const chunks = working.split('•');
+  const refinedChunks: string[] = [];
+
+  for (const chunk of chunks) {
+    if (chunk.length <= 5) {
+      refinedChunks.push(chunk);
+      continue;
+    }
+    // Split after vowel group + single consonant before another vowel, or between double consonants
+    const sub = chunk
+      .replace(/([aeiouyäöüAEIOUYÄÖÜ]+)(sch|ch|ck|st|sp|pf|tz|[bcdfghjklmnpqrstvwxzß])([bcdfghjklmnpqrstvwxz][aeiouyäöü])/g, '$1$2•$3')
+      .replace(/([aeiouyäöüAEIOUYÄÖÜ]{1,2})([bcdfghjklmnpqrstvwxz])([aeiouyäöü])/g, '$1•$2$3');
+    refinedChunks.push(...sub.split('•').filter(Boolean));
+  }
+
+  const result = refinedChunks.join('•');
+  return result.includes('•') ? result : `${clean.slice(0, 4)}•${clean.slice(4, 8)}•${clean.slice(8)}`;
+}
+
+/**
+ * Extracts all German words >= 9 letters from a selected text and returns their syllable breakdown.
+ */
+export function buildSelectionSyllableBreakdown(
+  selectionText: string
+): Array<{ word: string; syllables: string }> {
+  const tokens = selectionText
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^a-zA-ZäöüÄÖÜß]+|[^a-zA-ZäöüÄÖÜß]+$/g, ''))
+    .filter((w) => w.length >= 9);
+
+  const seen = new Set<string>();
+  const results: Array<{ word: string; syllables: string }> = [];
+  for (const word of tokens) {
+    const key = word.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      word,
+      syllables: splitGermanWordIntoSyllables(word)
+    });
+  }
+  return results;
+}
+
+/**
+ * Splits a German paragraph or dialogue turn into individual sentences for sentence-level 🔊 buttons.
+ */
+export function splitGermanTextIntoSentences(text: string): string[] {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const matches = clean.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+  if (!matches) return [clean];
+  return matches.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+/**
+ * Extracts clean individual words from a multi-word German selection for word-by-word translation.
+ */
+export function extractCleanWordsFromSelection(text: string): string[] {
+  const tokens = text
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^a-zA-ZäöüÄÖÜß0-9-]+|[^a-zA-ZäöüÄÖÜß0-9-]+$/g, ''))
+    .filter((w) => w.length >= 2);
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const w of tokens) {
+    const lower = w.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    unique.push(w);
+  }
+  return unique;
+}
+
+

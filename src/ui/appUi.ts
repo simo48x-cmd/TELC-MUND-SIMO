@@ -49,12 +49,25 @@ import {
   getTeleprompterWhisperLevels,
   buildPostCallDiagnosticReport,
   PostCallDiagnosticReport,
-  SimulatorTurnContext
+  SimulatorTurnContext,
+  splitGermanWordIntoSyllables,
+  buildSelectionSyllableBreakdown,
+  splitGermanTextIntoSentences,
+  extractCleanWordsFromSelection
 } from '../utils/pingPongLogic';
 import {
   sfx,
   speakGermanText,
   stopGermanSpeech,
+  stopGermanAudio,
+  playGermanSelection,
+  translateDeToAr,
+  HardWordEntry,
+  loadHardWordsBank,
+  saveHardWordToBank,
+  removeHardWordFromBank,
+  isWordInHardBank,
+  QuickVoiceComparisonRecorder,
   speakGermanGeminiTts,
   startBrowserSpeechRecognition,
   fastGradeSlotSubmission,
@@ -180,6 +193,23 @@ interface AppUiRuntimeState {
   xrGameState: 'title' | 'playing' | 'paused' | 'gameover';
   selectedBioId: string;
   liveBioMetadata: Record<string, { sequenceLength: number; entryTitle: string; resolution: string; experimentalMethod: string }>;
+
+  // Global Smart Selection & Click-Word Translator + Pronouncer Studio state
+  selectionPopup: {
+    visible: boolean;
+    selectedText: string;
+    syllables: string;
+    translationAr: string;
+    translationLoading: boolean;
+    wordByWordList: Array<{ wordDe: string; syllables: string; meaningAr: string }>;
+    wordByWordLoading: boolean;
+    playingTag: string | null;
+    isRecordingVoice: boolean;
+    hasRecordedClip: boolean;
+    savedToBank: boolean;
+  };
+  hardWordsBank: HardWordEntry[];
+  showHardWordsModal: boolean;
 }
 
 function escapeHtml(str: string): string {
@@ -197,6 +227,27 @@ function renderClauseWithGoldVerb(clause: string): string {
   return `<span>${escapeHtml(prefix)} </span><span class="verb-gold-badge inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/25 border border-amber-400 text-amber-300 font-bold font-mono-de" title="Verb am Ende (الفعل المصرف فـ آخر الجملة)">${escapeHtml(finalVerb)}</span><span>${escapeHtml(punctuation)}</span>`;
 }
 
+/**
+ * Renders a German text with a subtle 🔊 button at the beginning of each individual sentence
+ * so the student can click 🔊 next to any sentence to hear just that sentence!
+ */
+function renderSentencesWithInlineAudioButtons(rawGermanText: string): string {
+  const sentences = splitGermanTextIntoSentences(rawGermanText);
+  if (sentences.length === 0) return '';
+  return sentences
+    .map(
+      (s, idx) =>
+        `<span class="inline mr-1.5 leading-relaxed"><button type="button" data-action="play-single-sentence" data-sentence="${escapeHtml(
+          s
+        )}" title="اسمع نطق هذه الجملة فقط (1x)" aria-label="نطق الجملة ${
+          idx + 1
+        }" class="inline-flex items-center justify-center px-1.5 py-0.5 mr-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-black text-[11px] font-bold transition cursor-pointer align-baseline">🔊</button><span class="selectable-german-sentence">${escapeHtml(
+          s
+        )}</span></span>`
+    )
+    .join(' ');
+}
+
 export class TelcMasterAppUI {
   private root: HTMLElement;
   private spatialScene: TelcSpatialScene | null = null;
@@ -209,6 +260,7 @@ export class TelcMasterAppUI {
   private callSpeechRec: { stop: () => void } | null = null;
   private callSilenceTimer: number | null = null;
   private cloudUnsub: (() => void) | null = null;
+  private quickRecorder = new QuickVoiceComparisonRecorder();
 
   constructor(root: HTMLElement, spatialScene: TelcSpatialScene | null = null) {
     this.root = root;
@@ -309,7 +361,23 @@ export class TelcMasterAppUI {
       xrRoundIndex: 0,
       xrGameState: isAutostart ? 'playing' : 'playing',
       selectedBioId: 'bio-dopamine',
-      liveBioMetadata: {}
+      liveBioMetadata: {},
+
+      selectionPopup: {
+        visible: false,
+        selectedText: '',
+        syllables: '',
+        translationAr: '',
+        translationLoading: false,
+        wordByWordList: [],
+        wordByWordLoading: false,
+        playingTag: null,
+        isRecordingVoice: false,
+        hasRecordedClip: false,
+        savedToBank: false
+      },
+      hardWordsBank: loadHardWordsBank(),
+      showHardWordsModal: false
     };
 
     this.applyThemeToDocument(this.state.progress.theme);
@@ -406,6 +474,8 @@ export class TelcMasterAppUI {
         ${this.renderFooter()}
         ${this.state.activeCertExam ? this.renderCertificationModal(this.state.activeCertExam) : ''}
         ${this.state.showDiagnosticModal ? this.renderDiagnosticModal() : ''}
+        ${this.state.showHardWordsModal ? this.renderHardWordsBankModal() : ''}
+        ${this.state.selectionPopup.visible ? this.renderSelectionStudioPopup() : ''}
       </div>
     `;
   }
@@ -455,6 +525,19 @@ export class TelcMasterAppUI {
                 <span dir="rtl">الفراغات المحفوظة: ${progress.masteredSlotIds.length}</span>
               </div>
 
+              <!-- My Mündlich Hard Words Bank Button (📚 كلماتي الصعبة في النطق) -->
+              <button
+                type="button"
+                data-action="open-hard-words-modal"
+                data-testid="open-hard-words-btn"
+                aria-label="كلماتي الصعبة في النطق"
+                class="px-3 py-1.5 rounded-lg text-xs font-extrabold bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-black border border-amber-400/50 transition cursor-pointer flex items-center gap-1.5"
+                dir="rtl"
+              >
+                <span>📚</span>
+                <span>كلماتي الصعبة في النطق (${this.state.hardWordsBank.length})</span>
+              </button>
+
               <!-- Plan Mode Switcher (45 vs 60 days) -->
               <button
                 type="button"
@@ -493,6 +576,32 @@ export class TelcMasterAppUI {
                   ? `<button type="button" data-action="firebase-logout" aria-label="تسجيل الخروج من السحابة" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 cursor-pointer">☁️ متصل (${escapeHtml(currentUser.displayName || 'Mohammed')})</button>`
                   : `<button type="button" data-action="firebase-login" aria-label="حفظ التقدم في السحابة" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer">☁️ حفظ التقدم فـ Cloud</button>`
               }
+            </div>
+          </div>
+
+          <!-- Instant Selection & Word-Click Translator/Pronouncer Helper Bar -->
+          <div class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-950/70 via-indigo-950/70 to-amber-950/70 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="flex items-center gap-1.5 font-bold text-emerald-300" dir="rtl">
+              <span>🖱️</span>
+              <span>سيلكسيوني أي كلمة أو جملة بالماوس (أو كليكي جوج مرات) لترجمتها للعربية وسماع نطقها وتقطيعها فوراً!</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5" dir="ltr">
+              <span class="text-[11px] text-amber-300 font-bold" dir="rtl">جرب كلمة طويلة دابا:</span>
+              ${['Sehenswürdigkeiten', 'Umweltverschmutzung', 'Verantwortungsbewusstsein', 'Wirtschaftswissenschaften']
+                .map(
+                  (w) => `
+                    <button
+                      type="button"
+                      data-action="sel-open-word"
+                      data-word="${escapeHtml(w)}"
+                      aria-label="نطق وترجمة ${w}"
+                      class="px-2 py-0.5 rounded-md bg-black/40 hover:bg-emerald-600 text-emerald-200 hover:text-white border border-emerald-400/40 text-[11px] font-mono-de font-bold cursor-pointer transition"
+                    >
+                      🔍 ${escapeHtml(w)}
+                    </button>
+                  `
+                )
+                .join('')}
             </div>
           </div>
 
@@ -963,7 +1072,8 @@ export class TelcMasterAppUI {
                   </div>
 
                   <!-- Interactive German Template with Highlighted Slots -->
-                  <div class="p-3.5 rounded-xl bg-black/25 border border-white/10 text-sm sm:text-base leading-relaxed" dir="ltr">
+                  <div class="p-3.5 rounded-xl bg-black/25 border border-white/10 text-sm sm:text-base leading-relaxed space-y-2" dir="ltr">
+                    <div>
                     ${
                       isRonde6 && this.state.useUniversalJokerRonde6
                         ? `<span class="text-amber-300 font-semibold">${escapeHtml(TEIL2_RONDE6_UNIVERSAL_JOKER.de)}</span>`
@@ -1016,6 +1126,17 @@ export class TelcMasterAppUI {
                           <span>${escapeHtml(round.fixedTemplateAfter)}</span>
                         `
                     }
+                    </div>
+                    <!-- Individual Sentence Play Buttons (🔊) for this Round -->
+                    <div class="pt-2 border-t border-white/10 text-xs sm:text-sm opacity-90">
+                      ${renderSentencesWithInlineAudioButtons(
+                        isRonde6 && this.state.useUniversalJokerRonde6
+                          ? TEIL2_RONDE6_UNIVERSAL_JOKER.de
+                          : round.slot2Content
+                          ? `${round.fixedTemplateBefore}${round.slotContent}${round.fixedTemplateMiddle || ''}${round.slot2Content}${round.fixedTemplateAfter}`
+                          : `${round.fixedTemplateBefore}${round.slotContent}${round.fixedTemplateAfter}`
+                      )}
+                    </div>
                   </div>
 
                   <!-- Darija Translation of the Slot -->
@@ -1485,6 +1606,13 @@ export class TelcMasterAppUI {
               <div class="p-3.5 rounded-xl studio-elevated space-y-1.5">
                 <div class="text-xs font-bold text-emerald-400" dir="rtl">1️⃣ الدخلة الثابتة (Dkhla Slot-Filler):</div>
                 <div class="text-sm leading-relaxed" dir="ltr">
+                  <button
+                    type="button"
+                    data-action="play-single-sentence"
+                    data-sentence="${escapeHtml(`${TEIL3_METHODOLOGY_OVERVIEW.openingTemplate.templateBefore}${topic.dkhlaSlotAccusative}${TEIL3_METHODOLOGY_OVERVIEW.openingTemplate.templateAfter}`)}"
+                    aria-label="نطق الدخلة"
+                    class="inline-flex items-center justify-center w-5 h-5 mr-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/30 text-[11px] align-middle cursor-pointer transition"
+                  >🔊</button>
                   „${escapeHtml(TEIL3_METHODOLOGY_OVERVIEW.openingTemplate.templateBefore)}<span class="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-bold">${escapeHtml(topic.dkhlaSlotAccusative)}</span>${escapeHtml(TEIL3_METHODOLOGY_OVERVIEW.openingTemplate.templateAfter)}“
                 </div>
               </div>
@@ -1496,11 +1624,11 @@ export class TelcMasterAppUI {
                 </div>
                 <div class="space-y-2 text-sm" dir="ltr">
                   <div class="p-2.5 rounded-lg bg-black/20">
-                    <strong>• Punkt A (Spezifisch):</strong> „Zuerst würde ich vorschlagen, dass wir ${escapeHtml(topic.herzPoint1De)}“
+                    <strong>• Punkt A (Spezifisch):</strong> ${renderSentencesWithInlineAudioButtons(`Zuerst würde ich vorschlagen, dass wir ${topic.herzPoint1De}`)}
                     <div class="text-xs text-amber-300 mt-1" dir="rtl">🇲🇦 ${escapeHtml(topic.herzPoint1Darija)}</div>
                   </div>
                   <div class="p-2.5 rounded-lg bg-black/20">
-                    <strong>• Punkt B (Spezifisch):</strong> „Außerdem wäre es sehr sinnvoll, wenn wir ${escapeHtml(topic.herzPoint2De)}“
+                    <strong>• Punkt B (Spezifisch):</strong> ${renderSentencesWithInlineAudioButtons(`Außerdem wäre es sehr sinnvoll, wenn wir ${topic.herzPoint2De}`)}
                     <div class="text-xs text-amber-300 mt-1" dir="rtl">🇲🇦 ${escapeHtml(topic.herzPoint2Darija)}</div>
                   </div>
                 </div>
@@ -1517,8 +1645,8 @@ export class TelcMasterAppUI {
                       (j) => `
                         <div class="p-2.5 rounded-lg bg-black/20 text-xs space-y-1">
                           <div class="font-bold text-emerald-400" dir="rtl">${escapeHtml(j.titleDarija)}</div>
-                          <div dir="ltr">${escapeHtml(this.state.indirectTransformerActive ? j.indirectB2Question : j.directA2Question)}</div>
-                          <div class="opacity-85" dir="ltr">➔ ${escapeHtml(j.strongB2Answer)}</div>
+                          <div dir="ltr">${renderSentencesWithInlineAudioButtons(this.state.indirectTransformerActive ? j.indirectB2Question : j.directA2Question)}</div>
+                          <div class="opacity-85" dir="ltr">➔ ${renderSentencesWithInlineAudioButtons(j.strongB2Answer)}</div>
                         </div>
                       `
                     )
@@ -1530,6 +1658,13 @@ export class TelcMasterAppUI {
               <div class="p-3.5 rounded-xl studio-elevated space-y-1.5">
                 <div class="text-xs font-bold text-emerald-400" dir="rtl">4️⃣ الخاتمة الثابتة (Khatima Slot-Filler):</div>
                 <div class="text-sm leading-relaxed" dir="ltr">
+                  <button
+                    type="button"
+                    data-action="play-single-sentence"
+                    data-sentence="${escapeHtml(`${TEIL3_METHODOLOGY_OVERVIEW.closingTemplate.templateBefore}${topic.khatimaSlotNominative}${TEIL3_METHODOLOGY_OVERVIEW.closingTemplate.templateAfter}`)}"
+                    aria-label="نطق الخاتمة"
+                    class="inline-flex items-center justify-center w-5 h-5 mr-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-500/30 text-[11px] align-middle cursor-pointer transition"
+                  >🔊</button>
                   „${escapeHtml(TEIL3_METHODOLOGY_OVERVIEW.closingTemplate.templateBefore)}<span class="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-bold">${escapeHtml(topic.khatimaSlotNominative)}</span>${escapeHtml(TEIL3_METHODOLOGY_OVERVIEW.closingTemplate.templateAfter)}“
                 </div>
               </div>
@@ -1658,17 +1793,17 @@ export class TelcMasterAppUI {
                       <span class="text-[11px] font-mono-de text-indigo-300 block">
                         ${this.state.indirectTransformerActive ? '❓ B2 Indirekte Frage (Verb am Ende):' : '❓ A2 Direkte Frage:'}
                       </span>
-                      <strong>„${escapeHtml(
+                      <strong>${renderSentencesWithInlineAudioButtons(
                         this.state.indirectTransformerActive ? pt.indirectB2Question : pt.directA2Question
-                      )}“</strong>
+                      )}</strong>
                     </div>
                     <div class="p-2 rounded bg-black/20">
                       <span class="text-[11px] font-mono-de text-emerald-300 block">
                         ${this.state.indirectTransformerActive ? '💡 B2 Antwort (Konjunktiv II):' : '💡 A2 Antwort:'}
                       </span>
-                      <span>„${escapeHtml(
+                      <span>${renderSentencesWithInlineAudioButtons(
                         this.state.indirectTransformerActive ? pt.strongB2Answer : pt.directA2Answer
-                      )}“</span>
+                      )}</span>
                     </div>
                   </div>
 
@@ -1689,8 +1824,8 @@ export class TelcMasterAppUI {
               (qa) => `
                 <div class="studio-elevated p-3.5 rounded-xl space-y-2">
                   <div class="text-xs font-bold text-sky-300" dir="rtl">${escapeHtml(qa.topicDarija)}</div>
-                  <div class="text-xs font-semibold" dir="ltr">❓ „${escapeHtml(qa.questionDe)}“</div>
-                  <div class="text-xs opacity-90" dir="ltr">✅ „${escapeHtml(qa.answerDe)}“</div>
+                  <div class="text-xs font-semibold" dir="ltr">❓ ${renderSentencesWithInlineAudioButtons(qa.questionDe)}</div>
+                  <div class="text-xs opacity-90" dir="ltr">✅ ${renderSentencesWithInlineAudioButtons(qa.answerDe)}</div>
                   <div class="text-[11px] text-amber-300" dir="rtl">💡 ${escapeHtml(qa.darijaExplanation)}</div>
                 </div>
               `
@@ -1743,7 +1878,7 @@ export class TelcMasterAppUI {
           </div>
 
           <div class="p-4 rounded-xl bg-black/25 border border-white/10 text-sm sm:text-base leading-relaxed font-medium" dir="ltr">
-            „${escapeHtml(MOHAMMED_PROFILE.introGerman)}“
+            ${renderSentencesWithInlineAudioButtons(MOHAMMED_PROFILE.introGerman)}
           </div>
 
           <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs sm:text-sm font-semibold text-amber-300" dir="rtl">
@@ -1793,7 +1928,7 @@ export class TelcMasterAppUI {
                       </button>
                     </div>
                     <div class="text-xs font-bold text-amber-300" dir="ltr">${escapeHtml(step.titleSpin)}</div>
-                    <p class="text-sm leading-relaxed" dir="ltr">„${escapeHtml(step.germanText)}“</p>
+                    <div class="text-sm leading-relaxed" dir="ltr">${renderSentencesWithInlineAudioButtons(step.germanText)}</div>
                     <p class="text-xs opacity-80" dir="rtl">🇲🇦 ${escapeHtml(step.darijaText)}</p>
                   </div>
 
@@ -1834,7 +1969,7 @@ export class TelcMasterAppUI {
                     </button>
                   </div>
                   <div class="text-xs font-bold text-amber-300" dir="rtl">${escapeHtml(qa.questionDarija)}</div>
-                  <div class="text-sm leading-relaxed" dir="ltr">✅ <strong>Antwort:</strong> „${escapeHtml(qa.answerDe)}“</div>
+                  <div class="text-sm leading-relaxed" dir="ltr">✅ <strong>Antwort:</strong> ${renderSentencesWithInlineAudioButtons(qa.answerDe)}</div>
                   <div class="text-xs opacity-80" dir="rtl">🇲🇦 ${escapeHtml(qa.answerDarija)}</div>
                 </div>
               `
@@ -1867,7 +2002,7 @@ export class TelcMasterAppUI {
                       </button>
                     </div>
                     <div class="text-xs font-bold text-amber-300" dir="rtl">${escapeHtml(b.topicNameDarija)}</div>
-                    <p class="text-xs sm:text-sm leading-relaxed" dir="ltr">„${escapeHtml(fullBackupDe)}“</p>
+                    <div class="text-xs sm:text-sm leading-relaxed" dir="ltr">${renderSentencesWithInlineAudioButtons(fullBackupDe)}</div>
                     <p class="text-xs opacity-75" dir="rtl">${escapeHtml(b.darijaSummary)}</p>
                   </div>
                   <div class="pt-2 border-t border-white/10 text-xs" dir="ltr">
@@ -2178,7 +2313,7 @@ export class TelcMasterAppUI {
                     <div class="text-xs font-bold text-amber-300" dir="rtl">${escapeHtml(qa.questionDarija)}</div>
 
                     <div class="p-3.5 rounded-xl bg-black/25 border border-white/10 text-sm leading-relaxed" dir="ltr">
-                      „${escapeHtml(answerText)}“
+                      ${renderSentencesWithInlineAudioButtons(answerText)}
                     </div>
 
                     <div class="text-xs opacity-85" dir="rtl">
@@ -4002,15 +4137,110 @@ export class TelcMasterAppUI {
           break;
         }
 
-        // Generic TTS
+        // Generic TTS & Individual Sentence Audio
+        case 'play-single-sentence': {
+          const sentence = target.dataset.sentence || '';
+          if (sentence) {
+            playGermanSelection(sentence, 1.0, 1);
+          }
+          break;
+        }
         case 'speak-text': {
           const txt = target.dataset.text || '';
-          speakGermanText(txt, 1.0);
+          playGermanSelection(txt, 1.0, 1);
           break;
         }
         case 'speak-text-slow': {
           const txt = target.dataset.text || '';
-          speakGermanText(txt, 0.8);
+          playGermanSelection(txt, 0.8, 1);
+          break;
+        }
+
+        // Global Smart Selection & Pronunciation Studio Actions
+        case 'sel-open-word': {
+          const word = target.dataset.word || '';
+          if (word) {
+            void this.openSelectionStudio(word);
+          }
+          break;
+        }
+        case 'sel-close-popup': {
+          stopGermanAudio();
+          this.state.selectionPopup.visible = false;
+          this.state.selectionPopup.playingTag = null;
+          this.render();
+          break;
+        }
+        case 'sel-play-audio': {
+          const rate = Number(target.dataset.rate || 1.0);
+          const repeat = Number(target.dataset.repeat || 1);
+          const tag = target.dataset.tag || `${rate}x`;
+          const textToPlay = target.dataset.text || this.state.selectionPopup.selectedText;
+          if (textToPlay) {
+            this.state.selectionPopup.playingTag = tag;
+            this.render();
+            playGermanSelection(textToPlay, rate, repeat, (isPlaying) => {
+              if (!isPlaying && this.state.selectionPopup.playingTag === tag) {
+                this.state.selectionPopup.playingTag = null;
+                this.render();
+              }
+            });
+          }
+          break;
+        }
+        case 'sel-stop-audio': {
+          stopGermanAudio();
+          this.state.selectionPopup.playingTag = null;
+          this.render();
+          break;
+        }
+        case 'sel-word-by-word': {
+          void this.handleWordByWordBreakdown();
+          break;
+        }
+        case 'sel-toggle-record': {
+          void this.handleToggleQuickPopupRecord();
+          break;
+        }
+        case 'sel-play-compare': {
+          this.handlePlayQuickComparison();
+          break;
+        }
+        case 'sel-save-hard-word': {
+          const p = this.state.selectionPopup;
+          if (p.selectedText) {
+            this.state.hardWordsBank = saveHardWordToBank({
+              de: p.selectedText,
+              ar: p.translationAr || 'ترجمة محفوظة للتدريب الشفوي',
+              syllables: p.syllables || p.selectedText
+            });
+            this.state.selectionPopup.savedToBank = true;
+            sfx.playVerbGoldChime();
+            this.addXpAndSync(10);
+            this.render();
+          }
+          break;
+        }
+        case 'open-hard-words-modal': {
+          this.state.hardWordsBank = loadHardWordsBank();
+          this.state.showHardWordsModal = true;
+          this.render();
+          break;
+        }
+        case 'close-hard-words-modal': {
+          this.state.showHardWordsModal = false;
+          this.render();
+          break;
+        }
+        case 'remove-hard-word': {
+          const deWord = target.dataset.word || '';
+          if (deWord) {
+            this.state.hardWordsBank = removeHardWordFromBank(deWord);
+            if (this.state.selectionPopup.selectedText.toLowerCase() === deWord.toLowerCase()) {
+              this.state.selectionPopup.savedToBank = false;
+            }
+            this.render();
+          }
           break;
         }
 
@@ -4339,6 +4569,528 @@ export class TelcMasterAppUI {
         this.state.careerSearchQuery = target.value;
       }
     });
+
+    // Global Mouse/Touch Selection & Double-Click Word Listener for Pronunciation & Translation Studio
+    const handleGlobalTextSelection = (ev: Event) => {
+      const rawTarget = ev.target as Node | null;
+      const targetEl =
+        rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement ?? null;
+      // Ignore clicks/selections inside the floating studio popup itself or inside form inputs
+      if (
+        targetEl?.closest('[data-testid="selection-studio-popup"]') ||
+        targetEl?.closest('[data-testid="hard-words-modal"]') ||
+        targetEl?.closest('button[data-action]') ||
+        targetEl?.tagName === 'INPUT' ||
+        targetEl?.tagName === 'TEXTAREA' ||
+        targetEl?.tagName === 'SELECT'
+      ) {
+        return;
+      }
+
+      window.setTimeout(() => {
+        const sel = window.getSelection();
+        const raw = sel ? sel.toString().trim() : '';
+        // Clean quotes and UI symbols
+        const cleaned = raw
+          .replace(/[„“"«»🔊🐢🔬🔁🎙️⭐🎯📄💡✅❌]/gu, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        // Must be at least 2 characters, up to 320 characters, and contain at least 1 Latin/German letter
+        if (cleaned.length >= 2 && cleaned.length <= 320 && /[A-Za-zÄÖÜäöüß]/.test(cleaned)) {
+          if (
+            !this.state.selectionPopup.visible ||
+            this.state.selectionPopup.selectedText !== cleaned
+          ) {
+            void this.openSelectionStudio(cleaned);
+          }
+        }
+      }, 40);
+    };
+
+    document.addEventListener('mouseup', handleGlobalTextSelection);
+    document.addEventListener('touchend', handleGlobalTextSelection);
+    document.addEventListener('dblclick', handleGlobalTextSelection);
+  }
+
+  private async openSelectionStudio(rawSelectedText: string): Promise<void> {
+    const cleaned = rawSelectedText
+      .replace(/[„“"«»🔊🐢🔬🔁🎙️⭐🎯📄💡]/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned.length < 2) return;
+
+    const breakdowns = buildSelectionSyllableBreakdown(cleaned);
+    const syllables =
+      breakdowns.length > 0
+        ? breakdowns.map((b) => b.syllables).join('  •  ')
+        : splitGermanWordIntoSyllables(cleaned);
+    const alreadySaved = isWordInHardBank(cleaned);
+
+    this.state.selectionPopup = {
+      visible: true,
+      selectedText: cleaned,
+      syllables,
+      translationAr: '',
+      translationLoading: true,
+      wordByWordList: [],
+      wordByWordLoading: false,
+      playingTag: null,
+      isRecordingVoice: false,
+      hasRecordedClip: false,
+      savedToBank: alreadySaved
+    };
+    this.render();
+
+    const translated = await translateDeToAr(cleaned);
+    // Guard against race conditions if user selected another word while translating
+    if (this.state.selectionPopup.selectedText === cleaned) {
+      this.state.selectionPopup.translationAr = translated;
+      this.state.selectionPopup.translationLoading = false;
+      this.render();
+    }
+  }
+
+  private async handleWordByWordBreakdown(): Promise<void> {
+    const text = this.state.selectionPopup.selectedText;
+    if (!text || this.state.selectionPopup.wordByWordLoading) return;
+
+    const words = extractCleanWordsFromSelection(text);
+    if (words.length === 0) return;
+
+    this.state.selectionPopup.wordByWordLoading = true;
+    this.render();
+
+    const results: Array<{ wordDe: string; syllables: string; meaningAr: string }> = [];
+    for (const w of words) {
+      const ar = await translateDeToAr(w);
+      results.push({
+        wordDe: w,
+        syllables: splitGermanWordIntoSyllables(w),
+        meaningAr: ar
+      });
+    }
+
+    if (this.state.selectionPopup.selectedText === text) {
+      this.state.selectionPopup.wordByWordList = results;
+      this.state.selectionPopup.wordByWordLoading = false;
+      this.render();
+    }
+  }
+
+  private async handleToggleQuickPopupRecord(): Promise<void> {
+    if (this.state.selectionPopup.isRecordingVoice) {
+      this.quickRecorder.stopRecording();
+      this.state.selectionPopup.isRecordingVoice = false;
+      this.state.selectionPopup.hasRecordedClip = Boolean(this.quickRecorder.recordedAudioUrl);
+      this.render();
+      return;
+    }
+
+    this.state.selectionPopup.isRecordingVoice = true;
+    this.render();
+
+    await this.quickRecorder.startRecording(
+      () => {
+        this.state.selectionPopup.isRecordingVoice = this.quickRecorder.isRecording;
+        this.state.selectionPopup.hasRecordedClip = Boolean(this.quickRecorder.recordedAudioUrl);
+        this.render();
+      },
+      () => {
+        this.state.selectionPopup.isRecordingVoice = false;
+        this.render();
+      }
+    );
+  }
+
+  private handlePlayQuickComparison(): void {
+    const targetWord = this.state.selectionPopup.selectedText;
+    if (!targetWord) return;
+
+    this.state.selectionPopup.playingTag = 'compare';
+    this.render();
+    void this.quickRecorder.playRecordedThenOriginal(targetWord).finally(() => {
+      if (this.state.selectionPopup.playingTag === 'compare') {
+        this.state.selectionPopup.playingTag = null;
+        this.render();
+      }
+    });
+  }
+
+  private renderSelectionStudioPopup(): string {
+    const p = this.state.selectionPopup;
+    if (!p.visible || !p.selectedText) return '';
+
+    const wordsInSelection = extractCleanWordsFromSelection(p.selectedText);
+    const hasLongSyllableBreakdown = p.syllables.includes('•');
+
+    return `
+      <aside
+        data-testid="selection-studio-popup"
+        aria-label="مختبر نطق وترجمة الكلمة أو الجملة المحددة"
+        class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[96vw] max-w-3xl rounded-2xl bg-zinc-950/95 border-2 border-emerald-500/70 shadow-[0_20px_60px_rgba(0,0,0,0.85)] backdrop-blur-xl p-4 sm:p-5 space-y-3.5 text-zinc-100"
+      >
+        <!-- Top Bar: Studio Title + Save to Hard Words Bank + Close -->
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5">
+          <div class="flex items-center gap-2" dir="rtl">
+            <span class="px-2.5 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold">
+              🎙️ مختبر نطق وترجمة الكلمة/الجملة المحددة
+            </span>
+            <span class="text-[11px] text-zinc-400 hidden sm:inline">
+              (سيلكسيوني أي كلمة أو جملة فـ الموقع باش تسمع نطقها بوحدها بـ 4 سرعات!)
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              data-action="sel-save-hard-word"
+              aria-label="احفظ للتدريب على النطق"
+              class="px-3 py-1 rounded-xl text-xs font-extrabold cursor-pointer transition border ${
+                p.savedToBank
+                  ? 'bg-amber-500 text-black border-amber-300'
+                  : 'bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border-amber-400/50'
+              }"
+              dir="rtl"
+            >
+              ${p.savedToBank ? '⭐ محفوظة في بنك كلماتي الصعبة ✓' : '⭐ احفظ للتدريب على النطق'}
+            </button>
+
+            <button
+              type="button"
+              data-action="sel-close-popup"
+              aria-label="إغلاق نافذة النطق والترجمة"
+              class="px-2.5 py-1 rounded-xl bg-white/10 hover:bg-rose-600 text-xs font-extrabold cursor-pointer transition"
+              dir="rtl"
+            >
+              ✕ إغلاق
+            </button>
+          </div>
+        </div>
+
+        <!-- 1. Selected German Text + Silben-Splitter (تقطيع الكلمات الطويلة لسهولة النطق) -->
+        <div class="p-3.5 rounded-xl bg-black/50 border border-white/10 space-y-1.5" dir="ltr">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="text-[11px] font-mono-de uppercase tracking-wider text-emerald-400">
+              🇩🇪 Ausgewählter Text / Wort
+            </span>
+            ${
+              hasLongSyllableBreakdown
+                ? `<span class="px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-400/40 text-indigo-300 text-[11px] font-mono-de" dir="rtl">
+                    🔬 تقطيع المقاطع الصوتية (Silben-Splitter) مفعل أوتوماتيكياً
+                  </span>`
+                : ''
+            }
+          </div>
+
+          <div class="text-base sm:text-xl font-extrabold text-white tracking-wide break-words" data-testid="selection-german-text">
+            ${escapeHtml(p.selectedText)}
+          </div>
+
+          ${
+            hasLongSyllableBreakdown
+              ? `<div class="pt-1 text-xs sm:text-sm font-mono-de text-amber-300 font-bold tracking-wider" data-testid="selection-syllables">
+                  🗣️ تقطيع النطق: <span class="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-400/30">${escapeHtml(p.syllables)}</span>
+                </div>`
+              : ''
+          }
+        </div>
+
+        <!-- 2. 4-Speed Isolated Instant Pronunciation Controls -->
+        <div class="space-y-1.5" dir="rtl">
+          <div class="text-xs font-bold text-emerald-300 flex items-center justify-between">
+            <span>🔊 نطق فوري معزول بـ 4 سرعات للتدريب (Shadowing):</span>
+            ${
+              p.playingTag
+                ? `<button
+                    type="button"
+                    data-action="sel-stop-audio"
+                    class="px-2 py-0.5 rounded bg-rose-600 text-white text-[11px] font-bold cursor-pointer"
+                  >⏹️ إيقاف الصوت</button>`
+                : ''
+            }
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button
+              type="button"
+              data-action="sel-play-audio"
+              data-rate="1"
+              data-repeat="1"
+              data-tag="1x"
+              aria-label="نطق عادي 1x"
+              class="py-2 px-3 rounded-xl text-xs font-extrabold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                p.playingTag === '1x'
+                  ? 'bg-emerald-500 text-black border-white ring-2 ring-emerald-300'
+                  : 'bg-emerald-600/25 hover:bg-emerald-600/45 text-emerald-200 border-emerald-500/40'
+              }"
+            >
+              <span>🔊</span>
+              <span>نطق عادي (1x)</span>
+            </button>
+
+            <button
+              type="button"
+              data-action="sel-play-audio"
+              data-rate="0.75"
+              data-repeat="1"
+              data-tag="0.75x"
+              aria-label="نطق بطيء للتدريب 0.75x"
+              class="py-2 px-3 rounded-xl text-xs font-extrabold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                p.playingTag === '0.75x'
+                  ? 'bg-amber-400 text-black border-white ring-2 ring-amber-200'
+                  : 'bg-amber-500/20 hover:bg-amber-500/40 text-amber-200 border-amber-500/40'
+              }"
+            >
+              <span>🐢</span>
+              <span>نطق بطيء للتدريب (0.75x)</span>
+            </button>
+
+            <button
+              type="button"
+              data-action="sel-play-audio"
+              data-rate="0.55"
+              data-repeat="1"
+              data-tag="0.55x"
+              aria-label="نطق مقطع ببطء شديد 0.55x"
+              class="py-2 px-3 rounded-xl text-xs font-extrabold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                p.playingTag === '0.55x'
+                  ? 'bg-indigo-400 text-black border-white ring-2 ring-indigo-200'
+                  : 'bg-indigo-500/25 hover:bg-indigo-500/45 text-indigo-200 border-indigo-500/40'
+              }"
+            >
+              <span>🔬</span>
+              <span>نطق مقطع ببطء شديد (0.55x)</span>
+            </button>
+
+            <button
+              type="button"
+              data-action="sel-play-audio"
+              data-rate="1"
+              data-repeat="3"
+              data-tag="3x"
+              aria-label="تكرار النطق 3 مرات Loop 3x"
+              class="py-2 px-3 rounded-xl text-xs font-extrabold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                p.playingTag === '3x'
+                  ? 'bg-teal-400 text-black border-white ring-2 ring-teal-200'
+                  : 'bg-teal-500/20 hover:bg-teal-500/40 text-teal-200 border-teal-500/40'
+              }"
+            >
+              <span>🔁</span>
+              <span>تكرار النطق 3 مرات (Loop 3x)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 3. Live Arabic Translation + Word-by-Word Breakdown -->
+        <div class="p-3 rounded-xl bg-indigo-950/50 border border-indigo-500/40 space-y-2" dir="rtl">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="text-xs font-bold text-indigo-300">
+              🌐 الترجمة العربية الفورية (مخزنة أوفلاين فـ الكاش):
+            </div>
+
+            ${
+              wordsInSelection.length > 1
+                ? `<button
+                    type="button"
+                    data-action="sel-word-by-word"
+                    aria-label="تفكيك الجملة كلمة بكلمة"
+                    class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-extrabold cursor-pointer transition"
+                  >
+                    ${p.wordByWordLoading ? '⏳ جاري التفكيك...' : '🔍 تفكيك الجملة كلمة بكلمة'}
+                  </button>`
+                : ''
+            }
+          </div>
+
+          <div class="text-sm sm:text-base font-extrabold text-amber-300" data-testid="selection-arabic-translation">
+            ${p.translationLoading ? '⏳ جاري ترجمة النص المحدد...' : escapeHtml(p.translationAr)}
+          </div>
+
+          ${
+            p.wordByWordList.length > 0
+              ? `<div class="pt-2 border-t border-white/10 grid grid-cols-2 sm:grid-cols-3 gap-2" dir="ltr">
+                  ${p.wordByWordList
+                    .map(
+                      (item) => `
+                        <div class="p-2 rounded-lg bg-black/40 border border-white/10 flex flex-col justify-between gap-1">
+                          <div class="flex items-center justify-between gap-1">
+                            <span class="text-xs font-extrabold text-emerald-300 truncate">${escapeHtml(item.wordDe)}</span>
+                            <button
+                              type="button"
+                              data-action="sel-play-audio"
+                              data-text="${escapeHtml(item.wordDe)}"
+                              data-rate="0.85"
+                              data-repeat="1"
+                              class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] cursor-pointer"
+                            >🔊</button>
+                          </div>
+                          ${
+                            item.syllables.includes('•')
+                              ? `<div class="text-[10px] font-mono-de text-amber-200">${escapeHtml(item.syllables)}</div>`
+                              : ''
+                          }
+                          <div class="text-xs text-amber-300 font-bold" dir="rtl">${escapeHtml(item.meaningAr)}</div>
+                        </div>
+                      `
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
+        </div>
+
+        <!-- 4. Quick 5-Second Voice Practice Inside the Popup -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-1" dir="rtl">
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-action="sel-toggle-record"
+              aria-label="سجل نطقك لهذه الكلمة"
+              class="px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer transition flex items-center gap-1.5 ${
+                p.isRecordingVoice
+                  ? 'bg-rose-600 text-white animate-pulse ring-2 ring-rose-300'
+                  : 'bg-zinc-800 hover:bg-zinc-700 text-emerald-300 border border-emerald-500/40'
+              }"
+            >
+              <span>${p.isRecordingVoice ? '⏹️ وقف التسجيل (5 ثواني)' : '🎙️ سجل نطقك لهذه الكلمة'}</span>
+            </button>
+
+            <button
+              type="button"
+              data-action="sel-play-compare"
+              aria-label="اسمع صوتك ثم اسمع النطق الأصلي"
+              class="px-3.5 py-2 rounded-xl text-xs font-extrabold cursor-pointer transition flex items-center gap-1.5 ${
+                p.hasRecordedClip
+                  ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                  : 'bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 border border-white/10'
+              }"
+            >
+              <span>▶️ اسمع صوتك ثم اسمع النطق الأصلي</span>
+            </button>
+          </div>
+
+          <span class="text-[11px] text-zinc-400">
+            💡 قارن النطق ديالك مباشرة مع النطق الألماني الأصلي!
+          </span>
+        </div>
+      </aside>
+    `;
+  }
+
+  private renderHardWordsBankModal(): string {
+    const list = this.state.hardWordsBank;
+    return `
+      <div
+        data-testid="hard-words-modal"
+        class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+      >
+        <div class="studio-card rounded-2xl max-w-3xl w-full p-5 sm:p-6 space-y-4 max-h-[88vh] overflow-y-auto border-2 border-amber-500/60">
+          <div class="flex items-center justify-between border-b border-zinc-700 pb-3" dir="rtl">
+            <div>
+              <span class="text-xs font-bold text-amber-400">My Mündlich Hard Words Bank • محرك التدريب الشخصي</span>
+              <h3 class="text-lg sm:text-xl font-extrabold">
+                📚 بنك كلماتي الصعبة في النطق الشفوي (${list.length})
+              </h3>
+            </div>
+            <button
+              type="button"
+              data-action="close-hard-words-modal"
+              aria-label="إغلاق بنك الكلمات الصعبة"
+              class="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-xs font-bold cursor-pointer"
+            >
+              ✕ إغلاق
+            </button>
+          </div>
+
+          <p class="text-xs sm:text-sm opacity-85" dir="rtl">
+            هنا كتلقى جميع الكلمات المركبة أو الجمل الصعبة لي حفظتيها باش تراجع نطقها ببطء (0.75x / 0.55x) أو بالتكرار (Loop 3x) قبل ما تدخل عند الممتحن:
+          </p>
+
+          ${
+            list.length === 0
+              ? `<div class="p-8 rounded-2xl studio-elevated text-center space-y-2" dir="rtl">
+                  <div class="text-2xl">🎙️</div>
+                  <div class="text-sm font-bold text-amber-300">مازال ما حفظتي حتى كلمة فـ البنك ديالك!</div>
+                  <div class="text-xs opacity-75">
+                    سيلكسيوني أي كلمة ألمانية فـ الموقع أو كليكي على الكلمات الطويلة الفوق وبرك على <strong>"⭐ احفظ للتدريب على النطق"</strong>.
+                  </div>
+                </div>`
+              : `<div class="space-y-3">
+                  ${list
+                    .map(
+                      (item) => `
+                        <div class="p-3.5 rounded-xl studio-elevated border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div class="space-y-1" dir="ltr">
+                            <div class="text-base font-extrabold text-emerald-300">${escapeHtml(item.de)}</div>
+                            ${
+                              item.syllables && item.syllables.includes('•')
+                                ? `<div class="text-xs font-mono-de text-amber-300">🗣️ ${escapeHtml(item.syllables)}</div>`
+                                : ''
+                            }
+                            <div class="text-xs sm:text-sm font-bold text-white" dir="rtl">🇲🇦 ${escapeHtml(item.ar)}</div>
+                          </div>
+
+                          <div class="flex flex-wrap items-center gap-1.5" dir="rtl">
+                            <button
+                              type="button"
+                              data-action="sel-play-audio"
+                              data-text="${escapeHtml(item.de)}"
+                              data-rate="1"
+                              data-repeat="1"
+                              class="px-2.5 py-1.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600 text-emerald-200 hover:text-white text-xs font-bold cursor-pointer"
+                            >
+                              🔊 1x
+                            </button>
+                            <button
+                              type="button"
+                              data-action="sel-play-audio"
+                              data-text="${escapeHtml(item.de)}"
+                              data-rate="0.75"
+                              data-repeat="1"
+                              class="px-2.5 py-1.5 rounded-lg bg-amber-500/25 hover:bg-amber-500 text-amber-200 hover:text-black text-xs font-bold cursor-pointer"
+                            >
+                              🐢 0.75x
+                            </button>
+                            <button
+                              type="button"
+                              data-action="sel-play-audio"
+                              data-text="${escapeHtml(item.de)}"
+                              data-rate="0.55"
+                              data-repeat="1"
+                              class="px-2.5 py-1.5 rounded-lg bg-indigo-500/25 hover:bg-indigo-500 text-indigo-200 hover:text-white text-xs font-bold cursor-pointer"
+                            >
+                              🔬 0.55x
+                            </button>
+                            <button
+                              type="button"
+                              data-action="sel-play-audio"
+                              data-text="${escapeHtml(item.de)}"
+                              data-rate="1"
+                              data-repeat="3"
+                              class="px-2.5 py-1.5 rounded-lg bg-teal-500/25 hover:bg-teal-500 text-teal-200 hover:text-black text-xs font-bold cursor-pointer"
+                            >
+                              🔁 3x
+                            </button>
+                            <button
+                              type="button"
+                              data-action="remove-hard-word"
+                              data-word="${escapeHtml(item.de)}"
+                              aria-label="حذف الكلمة من البنك"
+                              class="px-2.5 py-1.5 rounded-lg bg-rose-600/30 hover:bg-rose-600 text-rose-200 hover:text-white text-xs font-bold cursor-pointer"
+                            >
+                              🗑️ حذف
+                            </button>
+                          </div>
+                        </div>
+                      `
+                    )
+                    .join('')}
+                </div>`
+          }
+        </div>
+      </div>
+    `;
   }
 
   private buildCurrentSimulatorContext(userMsg = ''): SimulatorTurnContext {
