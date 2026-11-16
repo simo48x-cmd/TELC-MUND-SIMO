@@ -1429,4 +1429,70 @@ export function extractCleanWordsFromSelection(text: string): string[] {
   return unique;
 }
 
+export type LaserSlotKey = 'slot2' | 'slot3' | 'slot4' | 'slot5';
+
+export interface LaserPaperSegment {
+  text: string;
+  slotKey: LaserSlotKey | null;
+}
+
+/**
+ * Splits a full German exam article (`originalArticleDe`) into plain and highlighted segments
+ * corresponding to the verbatim `origSub` substrings for SLOT 2, SLOT 3, SLOT 4, and SLOT 5.
+ */
+export function segmentExamPaperForLaserScanner(
+  originalArticleDe: string,
+  subs: Record<LaserSlotKey, string>
+): LaserPaperSegment[] {
+  if (!originalArticleDe) return [];
+  const lowerArticle = originalArticleDe.toLowerCase();
+  const spans: Array<{ start: number; end: number; slotKey: LaserSlotKey }> = [];
+
+  const keys: LaserSlotKey[] = ['slot2', 'slot3', 'slot4', 'slot5'];
+  for (const key of keys) {
+    const sub = (subs[key] || '').trim();
+    if (!sub) continue;
+    const idx = lowerArticle.indexOf(sub.toLowerCase());
+    if (idx !== -1) {
+      spans.push({ start: idx, end: idx + sub.length, slotKey: key });
+    }
+  }
+
+  spans.sort((a, b) => a.start - b.start);
+
+  // Filter out overlapping spans if any
+  const nonOverlapping: typeof spans = [];
+  let cursor = 0;
+  for (const sp of spans) {
+    if (sp.start >= cursor) {
+      nonOverlapping.push(sp);
+      cursor = sp.end;
+    }
+  }
+
+  const segments: LaserPaperSegment[] = [];
+  let pos = 0;
+  for (const sp of nonOverlapping) {
+    if (sp.start > pos) {
+      segments.push({
+        text: originalArticleDe.slice(pos, sp.start),
+        slotKey: null,
+      });
+    }
+    segments.push({
+      text: originalArticleDe.slice(sp.start, sp.end),
+      slotKey: sp.slotKey,
+    });
+    pos = sp.end;
+  }
+  if (pos < originalArticleDe.length) {
+    segments.push({
+      text: originalArticleDe.slice(pos),
+      slotKey: null,
+    });
+  }
+  return segments;
+}
+
+
 

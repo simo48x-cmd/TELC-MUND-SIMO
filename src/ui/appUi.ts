@@ -53,7 +53,9 @@ import {
   splitGermanWordIntoSyllables,
   buildSelectionSyllableBreakdown,
   splitGermanTextIntoSentences,
-  extractCleanWordsFromSelection
+  extractCleanWordsFromSelection,
+  segmentExamPaperForLaserScanner,
+  LaserSlotKey
 } from '../utils/pingPongLogic';
 import {
   sfx,
@@ -102,6 +104,9 @@ interface AppUiRuntimeState {
   selectedBankSlotKey: string | null;
   distractorErrorMsg: string | null;
   useUniversalJokerRonde6: boolean;
+  useUniversalMoroccoJokerRonde5: boolean;
+  useVerbatimPaperPhotocopyMode: boolean;
+  laserActiveSlotFilter: 'ALL' | LaserSlotKey;
   voiceActiveRound: number;
   voiceTranscript: string;
   voiceIsRecording: boolean;
@@ -295,6 +300,9 @@ export class TelcMasterAppUI {
       selectedBankSlotKey: null,
       distractorErrorMsg: null,
       useUniversalJokerRonde6: false,
+      useUniversalMoroccoJokerRonde5: false,
+      useVerbatimPaperPhotocopyMode: true,
+      laserActiveSlotFilter: 'ALL',
       voiceActiveRound: 1,
       voiceTranscript: '',
       voiceIsRecording: false,
@@ -712,19 +720,23 @@ export class TelcMasterAppUI {
   // ====================================================================
   private renderTeil2Studio(): string {
     const exam = this.getCurrentExam();
-    const rounds = build6RoundsForExam(exam);
+    const rounds = build6RoundsForExam(exam, {
+      useUniversalMoroccoJoker: this.state.useUniversalMoroccoJokerRonde5,
+      useVerbatimPaperClauses: this.state.useVerbatimPaperPhotocopyMode,
+    });
     const searchLower = this.state.teil2Search.trim().toLowerCase();
     const filteredExams = TEIL2_EXAMS.filter(
       (e) =>
         !searchLower ||
         e.titleDe.toLowerCase().includes(searchLower) ||
         e.titleDarija.toLowerCase().includes(searchLower) ||
+        e.paperTitle.toLowerCase().includes(searchLower) ||
         String(e.id) === searchLower
     );
 
     const modes: Array<{ id: SlotInteractionMode; titleDarija: string; subtitleDe: string }> = [
-      { id: 'builder', titleDarija: '✨ الوضع 1: عمر الفراغات بالحركة', subtitleDe: 'Animated Slot-Builder + Verb-Gold' },
-      { id: 'scanner', titleDarija: '🔍 الوضع 2: رادار سرقة الأفكار من الورقة', subtitleDe: 'Paper-to-Slot Laser Scanner' },
+      { id: 'builder', titleDarija: '✨ الوضع 1: عمر الفراغات + الديطاي الجراحي', subtitleDe: 'Animated Slot-Builder + Verb-Kick Cases 1/2/3' },
+      { id: 'scanner', titleDarija: '🔍 الوضع 2: رادار الورقة الحقيقية بالماركور الأصفر', subtitleDe: 'Sprechen_B2_2026.pdf Laser Scanner' },
       { id: 'recall', titleDarija: '🧠 الوضع 3: وضع الحفاظة السريعة والاختبار', subtitleDe: 'Active Recall Blur & Tap' },
       { id: 'voice', titleDarija: '🎙️ الوضع 4: كمل الفراغ بصوتك', subtitleDe: 'Voice Slot-Filler Challenge' }
     ];
@@ -866,46 +878,101 @@ export class TelcMasterAppUI {
             .join('')}
         </div>
 
-        <!-- Active Exam Banner -->
-        <div class="studio-card rounded-2xl p-4 sm:p-5 border-l-4 border-l-emerald-500 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div class="text-xs font-mono-de uppercase tracking-wider text-emerald-400" dir="ltr">
-              TELC B2 Mündlich • Teil 2 Diskussion • Thema #${exam.id} von 46
+        <!-- Active Exam Banner + Paper-Photocopy & Morocco Joker Controls -->
+        <div class="studio-card rounded-2xl p-4 sm:p-5 border-l-4 border-l-emerald-500 flex flex-col gap-4">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-xs font-mono-de uppercase tracking-wider text-emerald-400" dir="ltr">
+                  TELC B2 Mündlich • Teil 2 Diskussion • Thema #${exam.id} von 46
+                </span>
+                <span class="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[11px] font-mono-de font-bold" dir="ltr">
+                  📄 Sprechen_B2_2026.pdf • Seite ${exam.pdfPage}
+                </span>
+              </div>
+              <h3 class="text-xl sm:text-2xl font-extrabold mt-0.5" dir="ltr">${escapeHtml(exam.titleDe)}</h3>
+              <div class="text-xs sm:text-sm font-mono-de text-emerald-300 mt-0.5" dir="ltr">
+                🎯 SLOT 1 (Überschrift in der Prüfung): <strong>„${escapeHtml(exam.paperTitle)}“</strong>
+              </div>
+              <p class="text-sm sm:text-base font-bold text-amber-400 mt-1" dir="rtl">${escapeHtml(exam.titleDarija)}</p>
             </div>
-            <h3 class="text-xl sm:text-2xl font-extrabold mt-0.5" dir="ltr">${escapeHtml(exam.titleDe)}</h3>
-            <p class="text-sm sm:text-base font-bold text-amber-400 mt-1" dir="rtl">${escapeHtml(exam.titleDarija)}</p>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-action="speak-full-pingpong"
+                aria-label="قراءة الحوار الكامل بالألمانية"
+                class="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer flex items-center gap-1.5"
+                dir="rtl"
+              >
+                <span>🔊</span>
+                <span>اسمع الـ 6 جولات كاملة (1.0x)</span>
+              </button>
+              <button
+                type="button"
+                data-action="speak-full-pingpong-slow"
+                aria-label="قراءة الحوار ببطء"
+                class="studio-elevated px-3.5 py-2 rounded-xl text-xs font-bold hover:border-emerald-500 cursor-pointer"
+                dir="rtl"
+              >
+                🐢 نطق بطيء للمبتدئين (0.8x)
+              </button>
+              <button
+                type="button"
+                data-action="mark-exam-completed"
+                data-id="${exam.id}"
+                aria-label="تسجيل هذا الموضوع كمحفوظ"
+                class="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 cursor-pointer"
+                dir="rtl"
+              >
+                ${this.state.progress.completedTeil2Exams.includes(exam.id) ? '✅ موضوع مضبوط (+50 XP)' : '🏆 علم هاد الموضوع كمضبوط'}
+              </button>
+            </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              data-action="speak-full-pingpong"
-              aria-label="قراءة الحوار الكامل بالألمانية"
-              class="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer flex items-center gap-1.5"
-              dir="rtl"
-            >
-              <span>🔊</span>
-              <span>اسمع الـ 6 جولات كاملة (1.0x)</span>
-            </button>
-            <button
-              type="button"
-              data-action="speak-full-pingpong-slow"
-              aria-label="قراءة الحوار ببطء"
-              class="studio-elevated px-3.5 py-2 rounded-xl text-xs font-bold hover:border-emerald-500 cursor-pointer"
-              dir="rtl"
-            >
-              🐢 نطق بطيء للمبتدئين (0.8x)
-            </button>
-            <button
-              type="button"
-              data-action="mark-exam-completed"
-              data-id="${exam.id}"
-              aria-label="تسجيل هذا الموضوع كمحفوظ"
-              class="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 cursor-pointer"
-              dir="rtl"
-            >
-              ${this.state.progress.completedTeil2Exams.includes(exam.id) ? '✅ موضوع مضبوط (+50 XP)' : '🏆 علم هاد الموضوع كمضبوط'}
-            </button>
+          <!-- Surgical Paper-Photocopy & Zero-Memorization Morocco Joker Bar -->
+          <div class="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs" dir="rtl">
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-action="toggle-verbatim-paper-mode"
+                class="px-3 py-1.5 rounded-xl font-extrabold border transition cursor-pointer flex items-center gap-1.5 ${
+                  this.state.useVerbatimPaperPhotocopyMode
+                    ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200'
+                    : 'studio-elevated opacity-80 hover:opacity-100'
+                }"
+              >
+                <span>🔬</span>
+                <span>${
+                  this.state.useVerbatimPaperPhotocopyMode
+                    ? 'وضع النسخ الجراحي الحرفي من الورقة مفعل (الحالات 1/2/3)'
+                    : 'تفعيل وضع النسخ الجراحي الحرفي من الورقة'
+                }</span>
+              </button>
+
+              <button
+                type="button"
+                data-action="toggle-ronde5-morocco-joker"
+                class="px-3 py-1.5 rounded-xl font-extrabold border transition cursor-pointer flex items-center gap-1.5 ${
+                  this.state.useUniversalMoroccoJokerRonde5
+                    ? 'bg-amber-500 text-black border-amber-300'
+                    : 'bg-amber-500/15 border-amber-400/40 text-amber-300 hover:bg-amber-500/25'
+                }"
+              >
+                <span>🇲🇦</span>
+                <span>${
+                  this.state.useUniversalMoroccoJokerRonde5
+                    ? 'الجوكر المغربي الموحد مفعل (0 حفاظة لكاع الـ 46 موضوع!)'
+                    : 'جرب الجوكر المغربي الموحد (0 حفاظة فـ الجولة 5)'
+                }</span>
+              </button>
+            </div>
+
+            <div class="flex items-center gap-2 text-[11px] opacity-85">
+              <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">الحالة 1: واجدة 100% فالورقة</span>
+              <span class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold">الحالة 2: رمي فعل واحد للخر</span>
+              <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">الحالة 3: جمع الفعل المنفصل فالخر</span>
+            </div>
           </div>
         </div>
 
@@ -920,16 +987,22 @@ export class TelcMasterAppUI {
 
   private renderTeil2Mode1Builder(exam: ReturnType<typeof this.getCurrentExam>, rounds: ReturnType<typeof build6RoundsForExam>): string {
     const filled = this.state.filledSlotsByExam[exam.id] || {};
-    const distractor1 = buildDistractorWithMiddleVerb(exam.slot4Advantage);
-    const distractor2 = buildDistractorWithMiddleVerb(exam.slot5Disadvantage);
+    const r1 = rounds[0];
+    const r2 = rounds[1];
+    const r3 = rounds[2];
+    const r4 = rounds[3];
+    const r5 = rounds[4];
+
+    const distractor1 = buildDistractorWithMiddleVerb(r3.slotContent);
+    const distractor2 = buildDistractorWithMiddleVerb(r4.slotContent);
 
     const bankCards = [
-      { key: 'slot1', label: '🎯 SLOT 1 (Smiya)', text: exam.slot1Theme, isTrap: false },
-      { key: 'slot2', label: '📄 SLOT 2 (Fikra 1)', text: exam.slot2Point1, isTrap: false },
-      { key: 'slot3', label: '📄 SLOT 3 (Fikra 2)', text: exam.slot3Point2, isTrap: false },
-      { key: 'slot4', label: '✅ SLOT 4 (Ijabia)', text: exam.slot4Advantage, isTrap: false },
-      { key: 'slot5', label: '⚠️ SLOT 5 (Salbia)', text: exam.slot5Disadvantage, isTrap: false },
-      { key: 'slot6', label: '🇲🇦 SLOT 6 (Lmaghrib)', text: exam.slot6Morocco, isTrap: false },
+      { key: 'slot1', label: '🎯 SLOT 1 (Smiya)', text: r1.slotContent, isTrap: false },
+      { key: 'slot2', label: `📄 SLOT 2 (Fikra 1 • الحالة ${exam.surgicalSlots.slot2.caseNum})`, text: r1.slot2Content || exam.slot2Point1, isTrap: false },
+      { key: 'slot3', label: `📄 SLOT 3 (Fikra 2 • الحالة ${exam.surgicalSlots.slot3.caseNum})`, text: r2.slotContent, isTrap: false },
+      { key: 'slot4', label: `✅ SLOT 4 (Ijabia • الحالة ${exam.surgicalSlots.slot4.caseNum})`, text: r3.slotContent, isTrap: false },
+      { key: 'slot5', label: `⚠️ SLOT 5 (Salbia • الحالة ${exam.surgicalSlots.slot5.caseNum})`, text: r4.slotContent, isTrap: false },
+      { key: 'slot6', label: '🇲🇦 SLOT 6 (Lmaghrib)', text: r5.slotContent, isTrap: false },
       { key: 'trap1', label: '🪤 فخ نحوي 1 (الفعل فالوسط!)', text: distractor1, isTrap: true },
       { key: 'trap2', label: '🪤 فخ نحوي 2 (الفعل فالوسط!)', text: distractor2, isTrap: true }
     ];
@@ -959,7 +1032,7 @@ export class TelcMasterAppUI {
           <div class="space-y-2.5">
             ${bankCards
               .map((card) => {
-                const isAlreadyPlaced = !card.isTrap && filled[card.key] === card.text;
+                const isAlreadyPlaced = !card.isTrap && Boolean(filled[card.key]);
                 return `
                   <button
                     type="button"
@@ -970,7 +1043,7 @@ export class TelcMasterAppUI {
                     aria-label="${card.label}"
                     class="w-full text-left p-3 rounded-xl border transition cursor-pointer ${
                       isAlreadyPlaced
-                        ? 'bg-emerald-500/15 border-emerald-500/50 opacity-75'
+                        ? 'bg-emerald-500/15 border-emerald-500/50 opacity-85'
                         : 'studio-elevated hover:border-amber-400'
                     }"
                   >
@@ -995,6 +1068,7 @@ export class TelcMasterAppUI {
           ${rounds
             .map((round) => {
               const isRonde1 = round.roundNumber === 1;
+              const isRonde5 = round.roundNumber === 5;
               const isRonde6 = round.roundNumber === 6;
               const slotKey =
                 round.roundNumber === 1
@@ -1007,18 +1081,23 @@ export class TelcMasterAppUI {
                   ? 'slot5'
                   : 'slot6';
 
-              const slot1Val = isRonde1 ? filled['slot1'] : filled[slotKey];
-              const slot2Val = isRonde1 ? filled['slot2'] : undefined;
+              const hasSlot1Filled = isRonde1 ? Boolean(filled['slot1']) : Boolean(filled[slotKey]);
+              const hasSlot2Filled = isRonde1 ? Boolean(filled['slot2']) : false;
+
+              const slot1Val = hasSlot1Filled ? round.slotContent : undefined;
+              const slot2Val = hasSlot2Filled ? round.slot2Content : undefined;
 
               const badgeColors =
                 round.speaker === 'Mohammed (Du)'
                   ? 'border-l-4 border-l-emerald-500'
                   : 'border-l-4 border-l-indigo-500';
 
+              const surgical = round.surgicalMeta;
+
               return `
                 <div class="studio-card rounded-2xl p-4 sm:p-5 space-y-3 ${badgeColors}">
                   <div class="flex flex-wrap items-center justify-between gap-2">
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                       <span class="px-2.5 py-1 rounded-lg text-xs font-extrabold ${
                         round.speaker === 'Mohammed (Du)'
                           ? 'bg-emerald-500/20 text-emerald-400'
@@ -1027,9 +1106,49 @@ export class TelcMasterAppUI {
                         🏓 ${escapeHtml(round.titleDe)}
                       </span>
                       <span class="text-xs font-bold opacity-85" dir="rtl">${escapeHtml(round.titleDarija)}</span>
+                      ${
+                        surgical
+                          ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-extrabold ${
+                              surgical.caseNum === 1
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : surgical.caseNum === 2
+                                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                                : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            }" dir="rtl">
+                              🔬 الحالة ${surgical.caseNum}: ${
+                              surgical.caseNum === 1
+                                ? 'واجدة 100% فالورقة'
+                                : surgical.caseNum === 2
+                                ? 'نقل فعل واحد للأخير'
+                                : 'جمع الفعل المنفصل فالأخير'
+                            }
+                            </span>`
+                          : ''
+                      }
                     </div>
 
-                    <div class="flex items-center gap-1.5">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      ${
+                        isRonde5
+                          ? `<button
+                              type="button"
+                              data-action="toggle-ronde5-morocco-joker"
+                              aria-label="تبديل الجوكر المغربي الموحد للجولة 5"
+                              class="px-2.5 py-1 rounded-lg text-xs font-extrabold ${
+                                this.state.useUniversalMoroccoJokerRonde5
+                                  ? 'bg-amber-500 text-black'
+                                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                              } cursor-pointer"
+                              dir="rtl"
+                            >
+                              🇲🇦 ${
+                                this.state.useUniversalMoroccoJokerRonde5
+                                  ? 'الجوكر المغربي الموحد (0 حفاظة) ✓'
+                                  : 'بدل للجوكر المغربي الموحد (0 حفاظة)'
+                              }
+                            </button>`
+                          : ''
+                      }
                       ${
                         isRonde6
                           ? `<button
@@ -1139,6 +1258,28 @@ export class TelcMasterAppUI {
                     </div>
                   </div>
 
+                  <!-- Surgical Paper-Photocopy Detail (الديطاي الجراحي من ورقة الامتحان) -->
+                  ${
+                    surgical
+                      ? `<div class="p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/30 space-y-1.5 text-xs">
+                          <div class="flex flex-wrap items-center justify-between gap-2" dir="rtl">
+                            <span class="font-extrabold text-indigo-300">
+                              🔬 الديطاي الجراحي (من ورقة الامتحان صفحة ${exam.pdfPage}):
+                            </span>
+                            <span class="font-mono-de text-[11px] px-2 py-0.5 rounded bg-black/40 text-amber-300" dir="ltr">
+                              Verb im Text: „${escapeHtml(surgical.origVerb)}“ ➔ am Ende: „${escapeHtml(surgical.finalVerb)}“
+                            </span>
+                          </div>
+                          <div class="text-xs font-mono-de text-zinc-300 bg-black/30 px-2.5 py-1.5 rounded-lg" dir="ltr">
+                            📄 <strong>Original im Blatt:</strong> „${escapeHtml(surgical.origSub)}“
+                          </div>
+                          <div class="text-xs font-semibold text-emerald-300" dir="rtl">
+                            🛠️ ${escapeHtml(surgical.surgicalDetail)}
+                          </div>
+                        </div>`
+                      : ''
+                  }
+
                   <!-- Darija Translation of the Slot -->
                   <div class="text-xs opacity-80 flex items-center justify-between gap-2" dir="rtl">
                     <span>🇲🇦 المعنى بالدارجة: <strong>${escapeHtml(round.darijaTranslation)}</strong> ${
@@ -1156,84 +1297,264 @@ export class TelcMasterAppUI {
   }
 
   private renderTeil2Mode2Scanner(exam: ReturnType<typeof this.getCurrentExam>): string {
+    const activeFilter = this.state.laserActiveSlotFilter;
+    const segments = segmentExamPaperForLaserScanner(exam.originalArticleDe, {
+      slot2: exam.surgicalSlots.slot2.origSub,
+      slot3: exam.surgicalSlots.slot3.origSub,
+      slot4: exam.surgicalSlots.slot4.origSub,
+      slot5: exam.surgicalSlots.slot5.origSub,
+    });
+
+    const slotBadgeMeta: Record<LaserSlotKey, { badgeDe: string; badgeAr: string; markClass: string }> = {
+      slot2: {
+        badgeDe: 'SLOT 2 • Fikra 1',
+        badgeAr: 'الفكرة 1 (الجولة 1)',
+        markClass: 'bg-yellow-400/30 border-b-2 border-yellow-400 text-yellow-100',
+      },
+      slot3: {
+        badgeDe: 'SLOT 3 • Fikra 2',
+        badgeAr: 'الفكرة 2 (الجولة 2)',
+        markClass: 'bg-sky-400/30 border-b-2 border-sky-400 text-sky-100',
+      },
+      slot4: {
+        badgeDe: 'SLOT 4 • Vorteil',
+        badgeAr: 'الإيجابية (الجولة 3)',
+        markClass: 'bg-emerald-400/30 border-b-2 border-emerald-400 text-emerald-100',
+      },
+      slot5: {
+        badgeDe: 'SLOT 5 • Nachteil',
+        badgeAr: 'السلبية (الجولة 4)',
+        markClass: 'bg-rose-400/30 border-b-2 border-rose-400 text-rose-100',
+      },
+    };
+
+    const filterButtons: Array<{ id: 'ALL' | LaserSlotKey; labelAr: string }> = [
+      { id: 'ALL', labelAr: '🔦 تلوين جميع الـ 4 جمل فـ الورقة' },
+      { id: 'slot2', labelAr: '📄 SLOT 2: الفكرة 1' },
+      { id: 'slot3', labelAr: '📄 SLOT 3: الفكرة 2' },
+      { id: 'slot4', labelAr: '✅ SLOT 4: الإيجابية' },
+      { id: 'slot5', labelAr: '⚠️ SLOT 5: السلبية' },
+    ];
+
+    const surgicalCards: Array<{ key: LaserSlotKey; titleDe: string; titleAr: string; colorClass: string; slot: typeof exam.surgicalSlots.slot2 }> = [
+      {
+        key: 'slot2',
+        titleDe: 'SLOT 2 (Ronde 1 • Zuerst wird beschrieben, dass ...)',
+        titleAr: 'الفكرة 1 المسروقة حرفياً من الورقة',
+        colorClass: 'border-l-4 border-l-yellow-400',
+        slot: exam.surgicalSlots.slot2,
+      },
+      {
+        key: 'slot3',
+        titleDe: 'SLOT 3 (Ronde 2 • Außerdem wird im Text noch erwähnt, dass ...)',
+        titleAr: 'الفكرة 2 المسروقة حرفياً من الورقة',
+        colorClass: 'border-l-4 border-l-sky-400',
+        slot: exam.surgicalSlots.slot3,
+      },
+      {
+        key: 'slot4',
+        titleDe: 'SLOT 4 (Ronde 3 • Ein großer Vorteil ist meiner Meinung nach, dass ...)',
+        titleAr: 'الإيجابية (Vorteil) المسروقة من الورقة',
+        colorClass: 'border-l-4 border-l-emerald-400',
+        slot: exam.surgicalSlots.slot4,
+      },
+      {
+        key: 'slot5',
+        titleDe: 'SLOT 5 (Ronde 4 • Ein wichtiger Nachteil ist aber zum Beispiel, dass ...)',
+        titleAr: 'السلبية (Nachteil) المسروقة من الورقة',
+        colorClass: 'border-l-4 border-l-rose-400',
+        slot: exam.surgicalSlots.slot5,
+      },
+    ];
+
     return `
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- Simulated TELC Exam Paper (Lesetext) -->
-        <div class="studio-card rounded-2xl p-5 space-y-4 border-2 border-amber-500/40">
-          <div class="flex items-center justify-between border-b border-zinc-700 pb-3">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <!-- Left Column (6 cols): Real Verbatim TELC Exam Paper (Sprechen_B2_2026.pdf) with Yellow Marker Highlights -->
+        <div class="lg:col-span-6 studio-card rounded-2xl p-5 space-y-4 border-2 border-amber-500/50 lg:sticky lg:top-36">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-700 pb-3">
             <div dir="ltr">
-              <span class="text-xs font-mono-de uppercase text-amber-400">Offizielles Aufgabenblatt • Teil 2</span>
+              <span class="text-xs font-mono-de uppercase text-amber-400">
+                Sprechen_B2_2026.pdf • Seite ${exam.pdfPage} • Offizielles Aufgabenblatt
+              </span>
               <h4 class="text-lg font-extrabold">${escapeHtml(exam.titleDe)}</h4>
             </div>
             <span class="px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-500/20 text-amber-300" dir="rtl">
-              📄 ورقة الامتحان (20 دقيقة د التحضير)
+              📄 ورقة الامتحان الحقيقية (20 دقيقة د التحضير)
             </span>
           </div>
 
-          <div class="space-y-3 text-sm leading-relaxed p-4 rounded-xl bg-black/20 border border-white/10" dir="ltr">
-            <p class="p-2 rounded bg-emerald-500/15 border-l-4 border-emerald-400">
-              <strong class="text-emerald-300">[Überschrift / SLOT 1]:</strong> Thema: „<strong>${escapeHtml(exam.slot1Theme)}</strong>“
-            </p>
-            <p class="p-2 rounded bg-sky-500/15 border-l-4 border-sky-400">
-              <strong class="text-sky-300">[Textstelle 1 ➔ SLOT 2]:</strong> Im Artikel berichtet der Autor darüber, <strong>${escapeHtml(exam.slot2Point1)}</strong>
-            </p>
-            <p class="p-2 rounded bg-indigo-500/15 border-l-4 border-indigo-400">
-              <strong class="text-indigo-300">[Textstelle 2 ➔ SLOT 3]:</strong> Weiterhin betont eine aktuelle Umfrage, <strong>${escapeHtml(exam.slot3Point2)}</strong>
-            </p>
-            <p class="opacity-75 text-xs italic">
-              Diskutieren Sie mit Ihrer Partnerin / Ihrem Partner über den Text. Tauschen Sie Ihre Meinungen, Vor- und Nachteile sowie Erfahrungen aus Ihrem Heimatland aus.
+          <!-- Interactive Slot Highlight Filter Bar -->
+          <div class="flex flex-wrap items-center gap-1.5" dir="rtl">
+            ${filterButtons
+              .map((b) => {
+                const isActive = activeFilter === b.id;
+                return `
+                  <button
+                    type="button"
+                    data-action="set-laser-slot-filter"
+                    data-filter="${b.id}"
+                    class="px-2.5 py-1 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                      isActive
+                        ? 'bg-amber-400 text-black shadow'
+                        : 'studio-elevated hover:border-amber-400 opacity-85'
+                    }"
+                  >
+                    ${escapeHtml(b.labelAr)}
+                  </button>
+                `;
+              })
+              .join('')}
+          </div>
+
+          <!-- SLOT 1 Headline Highlight -->
+          <div class="p-3 rounded-xl bg-amber-500/15 border-2 border-amber-400/60 space-y-1" dir="ltr">
+            <div class="flex items-center justify-between text-xs font-bold text-amber-300">
+              <span>🎯 [SLOT 1: Überschrift / Smiya mn lwarqa]</span>
+              <span dir="rtl">انسخ العنوان كيما هو 100%!</span>
+            </div>
+            <div class="text-base sm:text-lg font-extrabold text-white">
+              „${escapeHtml(exam.paperTitle)}“
+            </div>
+          </div>
+
+          <!-- Full Verbatim German Exam Article with Yellow Marker Highlighting -->
+          <div class="p-4 rounded-xl bg-black/30 border border-white/10 text-sm sm:text-base leading-relaxed space-y-3" dir="ltr" data-testid="laser-verbatim-article">
+            <div class="text-[11px] font-mono-de uppercase tracking-wider text-zinc-400 flex items-center justify-between">
+              <span>Original-Prüfungstext (Lesetext Teil 2):</span>
+              <span dir="rtl" class="text-amber-300">كليكي على أي سطر ملون باش تسمعو!</span>
+            </div>
+            <p class="leading-8">
+              ${segments
+                .map((seg) => {
+                  if (!seg.slotKey) {
+                    return `<span>${escapeHtml(seg.text)}</span>`;
+                  }
+                  const meta = slotBadgeMeta[seg.slotKey];
+                  const isEmphasized = activeFilter === 'ALL' || activeFilter === seg.slotKey;
+                  return `<mark
+                    data-action="set-laser-slot-filter"
+                    data-filter="${seg.slotKey}"
+                    title="${meta.badgeDe} — ${meta.badgeAr}"
+                    class="px-1.5 py-0.5 rounded cursor-pointer transition ${
+                      isEmphasized
+                        ? `${meta.markClass} font-bold ring-1 ring-amber-300/50`
+                        : 'bg-white/5 text-zinc-300 opacity-60'
+                    }"
+                  ><span class="inline-block px-1.5 py-0.2 mr-1 rounded bg-black/60 text-[10px] font-mono-de uppercase text-amber-300 align-middle">[${meta.badgeDe}]</span>${escapeHtml(
+                    seg.text
+                  )}</mark>`;
+                })
+                .join('')}
             </p>
           </div>
 
           <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs sm:text-sm space-y-1" dir="rtl">
-            <div class="font-extrabold text-emerald-400">🎯 سر المهنة فـ 20 دقيقة د التحضير:</div>
-            <p>ما تحاولش تقرا النص كلمة بكلمة! سطر غير على العنوان (SLOT 1)، الجملة اللولة (SLOT 2)، والجملة التانية (SLOT 3)، وركل الفعل المصرف لآخر الجملة مورا dass!</p>
+            <div class="font-extrabold text-emerald-400">🎯 سر المهنة بـ الماركور الأصفر فـ 20 دقيقة د التحضير:</div>
+            <p>
+              هادو هما الـ 4 جمل الحرفية وسط الورقة الحقيقية ديال الامتحان! سطر عليهم بـ الماركور، وطبق عليهم الحالات الـ 3 (إما الفعل واجد فاللخر، أو رمي الفعل المصرف للخر مورا <code>dass</code>)!
+            </p>
           </div>
         </div>
 
-        <!-- Laser Scanner Slot Extraction Output -->
-        <div class="studio-card rounded-2xl p-5 space-y-4">
-          <div class="flex items-center justify-between">
+        <!-- Right Column (6 cols): Surgical Verb-Kick Breakdown for Slots 2, 3, 4, 5 + Morocco Joker -->
+        <div class="lg:col-span-6 space-y-4">
+          <div class="studio-card rounded-2xl p-4 flex flex-wrap items-center justify-between gap-2">
             <h4 class="text-base sm:text-lg font-extrabold text-emerald-400" dir="rtl">
-              ⚡ تحويل السطور المسطرة إلى فراغات البينغ بونغ الجاهزة
+              🔬 التحويل الجراحي الحرفي من الورقة إلى جمل <code>dass</code> (60/60)
             </h4>
             <button
               type="button"
               data-action="laser-scan-sound"
               aria-label="تشغيل رادار استخراج الأفكار"
-              class="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 text-white cursor-pointer"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
               dir="rtl"
             >
-              🔦 شغل الليزر الصوتي
+              🔊 اسمع الدخلة + الفكرة 1
             </button>
           </div>
 
-          <div class="space-y-3" dir="ltr">
-            <div class="studio-elevated p-3.5 rounded-xl space-y-1">
-              <div class="text-xs font-bold text-emerald-400">🎯 SLOT 1 (Smiya mn lwarqa — 100% aus dem Titel)</div>
-              <div class="text-sm font-bold">„Der Text befasst sich mit dem Thema <u>${escapeHtml(exam.slot1Theme)}</u>.“</div>
-              <div class="text-xs text-amber-300" dir="rtl">${escapeHtml(exam.slot1Darija)}</div>
-            </div>
+          ${surgicalCards
+            .map((item) => {
+              const s = item.slot;
+              const isHighlighted = activeFilter === item.key;
+              return `
+                <div class="studio-card rounded-2xl p-4 space-y-2.5 ${item.colorClass} ${
+                  isHighlighted ? 'ring-2 ring-amber-400' : ''
+                }">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="text-xs font-mono-de font-extrabold text-amber-300" dir="ltr">${escapeHtml(item.titleDe)}</span>
+                    <span class="px-2 py-0.5 rounded text-[11px] font-extrabold ${
+                      s.caseNum === 1
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : s.caseNum === 2
+                        ? 'bg-sky-500/20 text-sky-300'
+                        : 'bg-amber-500/20 text-amber-300'
+                    }" dir="rtl">
+                      الحالة ${s.caseNum} (${
+                        s.caseNum === 1
+                          ? 'جاهزة 100% فالورقة'
+                          : s.caseNum === 2
+                          ? 'نقل فعل واحد للأخير'
+                          : 'فعل منفصل فـ الأخير'
+                      })
+                    </span>
+                  </div>
 
-            <div class="studio-elevated p-3.5 rounded-xl space-y-1">
-              <div class="text-xs font-bold text-sky-400">📄 SLOT 2 (Fikra 1 mn lwarqa — Verb am Ende!)</div>
-              <div class="text-sm">„Zuerst wird beschrieben, ${renderClauseWithGoldVerb(exam.slot2Point1)}“</div>
-              <div class="text-xs text-amber-300" dir="rtl">${escapeHtml(exam.slot2Darija)}</div>
-            </div>
+                  <div class="p-2.5 rounded-xl bg-black/30 border border-white/10 text-xs space-y-1" dir="ltr">
+                    <div class="text-zinc-400">📄 <strong>Original im Prüfungstext:</strong></div>
+                    <div class="font-mono-de text-zinc-200">„${escapeHtml(s.origSub)}“</div>
+                  </div>
 
-            <div class="studio-elevated p-3.5 rounded-xl space-y-1">
-              <div class="text-xs font-bold text-indigo-400">📄 SLOT 3 (Fikra 2 mn lwarqa — Partner)</div>
-              <div class="text-sm">„Außerdem steht im Text, ${renderClauseWithGoldVerb(exam.slot3Point2)}“</div>
-              <div class="text-xs text-amber-300" dir="rtl">${escapeHtml(exam.slot3Darija)}</div>
-            </div>
+                  <div class="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/40 text-xs sm:text-sm space-y-1" dir="ltr">
+                    <div class="flex items-center justify-between text-[11px] text-emerald-300 font-bold">
+                      <span>✅ Fertige dass-Clause (Verb am Ende):</span>
+                      <button
+                        type="button"
+                        data-action="speak-text"
+                        data-text="dass ${escapeHtml(s.dassClauseDe)}"
+                        class="px-2 py-0.5 rounded bg-emerald-500/25 hover:bg-emerald-500 text-emerald-200 hover:text-black cursor-pointer"
+                      >
+                        🔊 اسمعها
+                      </button>
+                    </div>
+                    <div class="font-bold text-white">
+                      ..., dass ${renderClauseWithGoldVerb(s.dassClauseDe)}.
+                    </div>
+                  </div>
 
-            <div class="studio-elevated p-3.5 rounded-xl space-y-1">
-              <div class="text-xs font-bold text-emerald-400">✅ SLOT 4 + ⚠️ SLOT 5 + 🇲🇦 SLOT 6 (من راسك فـ الدار)</div>
-              <div class="text-xs space-y-1.5">
-                <div><strong>Vorteil:</strong> ${renderClauseWithGoldVerb(exam.slot4Advantage)}</div>
-                <div><strong>Nachteil:</strong> ${renderClauseWithGoldVerb(exam.slot5Disadvantage)}</div>
-                <div><strong>Marokko:</strong> ${renderClauseWithGoldVerb(exam.slot6Morocco)}</div>
-              </div>
+                  <div class="text-xs font-semibold text-amber-300" dir="rtl">
+                    🇲🇦 المعنى: ${escapeHtml(s.arMeaning)}
+                  </div>
+
+                  <div class="p-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/30 text-xs text-indigo-200 font-semibold" dir="rtl">
+                    🛠️ <strong>الديطاي الجراحي:</strong> ${escapeHtml(s.surgicalDetail)}
+                  </div>
+                </div>
+              `;
+            })
+            .join('')}
+
+          <!-- SLOT 6: Universal Zero-Memorization Morocco Joker Card -->
+          <div class="studio-card rounded-2xl p-4 space-y-2.5 border-l-4 border-l-amber-400">
+            <div class="flex flex-wrap items-center justify-between gap-2" dir="rtl">
+              <span class="text-xs font-extrabold text-amber-400">🇲🇦 SLOT 6 (Ronde 5 • التجربة والمغرب — جوكر 0 حفاظة أو جملة خاصة)</span>
+              <button
+                type="button"
+                data-action="toggle-ronde5-morocco-joker"
+                class="px-2.5 py-1 rounded-lg text-xs font-extrabold bg-amber-500 text-black cursor-pointer"
+              >
+                🔄 تبديل الجوكر المغربي
+              </button>
+            </div>
+            <div class="p-2.5 rounded-xl bg-black/30 border border-white/10 text-xs space-y-1" dir="ltr">
+              <div class="text-amber-300 font-bold">🃏 الجوكر المغربي الموحد (خدام مع كاع الـ 46 موضوع بلا حفاظة!):</div>
+              <div>„In meinem Heimatland Marokko ist es auch oft so, dass ${renderClauseWithGoldVerb(exam.moroccoUniversalJokerDe)}.“</div>
+              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.moroccoUniversalJokerAr)}</div>
+            </div>
+            <div class="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs space-y-1" dir="ltr">
+              <div class="text-emerald-300 font-bold">🇲🇦 الجملة الخاصة بهاد الموضوع فـ المغرب:</div>
+              <div>„In meinem Heimatland Marokko ist es auch oft so, dass ${renderClauseWithGoldVerb(exam.slot6Morocco)}.“</div>
+              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.slot6Darija)}</div>
             </div>
           </div>
         </div>
@@ -3987,12 +4308,37 @@ export class TelcMasterAppUI {
           this.render();
           break;
         }
+        case 'toggle-ronde5-morocco-joker': {
+          this.state.useUniversalMoroccoJokerRonde5 = !this.state.useUniversalMoroccoJokerRonde5;
+          sfx.playVerbGoldChime();
+          this.render();
+          break;
+        }
+        case 'toggle-verbatim-paper-mode': {
+          this.state.useVerbatimPaperPhotocopyMode = !this.state.useVerbatimPaperPhotocopyMode;
+          sfx.playVerbGoldChime();
+          this.render();
+          break;
+        }
+        case 'set-laser-slot-filter': {
+          const filter = (target.dataset.filter || 'ALL') as 'ALL' | LaserSlotKey;
+          this.state.laserActiveSlotFilter = filter;
+          const ex = this.getCurrentExam();
+          if (filter !== 'ALL' && ex.surgicalSlots[filter]) {
+            speakGermanText(ex.surgicalSlots[filter].origSub, 1.0);
+          }
+          this.render();
+          break;
+        }
         case 'speak-single-round':
         case 'speak-single-round-slow': {
           const rNum = Number(target.dataset.round || 1);
           const rate = action === 'speak-single-round-slow' ? 0.8 : 1.0;
           const ex = this.getCurrentExam();
-          const rounds = build6RoundsForExam(ex);
+          const rounds = build6RoundsForExam(ex, {
+            useUniversalMoroccoJoker: this.state.useUniversalMoroccoJokerRonde5,
+            useVerbatimPaperClauses: this.state.useVerbatimPaperPhotocopyMode,
+          });
           const r = rounds.find((item) => item.roundNumber === rNum);
           if (r) {
             const full = r.slot2Content
@@ -4006,7 +4352,10 @@ export class TelcMasterAppUI {
         case 'speak-full-pingpong-slow': {
           const rate = action === 'speak-full-pingpong-slow' ? 0.8 : 1.0;
           const ex = this.getCurrentExam();
-          const rounds = build6RoundsForExam(ex);
+          const rounds = build6RoundsForExam(ex, {
+            useUniversalMoroccoJoker: this.state.useUniversalMoroccoJokerRonde5,
+            useVerbatimPaperClauses: this.state.useVerbatimPaperPhotocopyMode,
+          });
           const allText = rounds
             .map((r) =>
               r.slot2Content

@@ -16,8 +16,10 @@ import {
   splitGermanWordIntoSyllables,
   buildSelectionSyllableBreakdown,
   splitGermanTextIntoSentences,
-  extractCleanWordsFromSelection
+  extractCleanWordsFromSelection,
+  segmentExamPaperForLaserScanner
 } from './pingPongLogic';
+import { TEIL2_EXAMS, build6RoundsForExam, UNIVERSAL_MOROCCO_JOKER } from '../data/teil2Data';
 
 test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-clause', () => {
   const res = splitClauseFinalVerb(
@@ -232,4 +234,34 @@ test('splitGermanWordIntoSyllables, buildSelectionSyllableBreakdown, splitGerman
   const words = extractCleanWordsFromSelection('Der Text befasst sich!');
   assert.deepEqual(words, ['Der', 'Text', 'befasst', 'sich']);
 });
+
+test('all 46 TEIL2_EXAMS have complete verbatim originalArticleDe and exact matching origSub for slots 2, 3, 4, and 5', () => {
+  assert.equal(TEIL2_EXAMS.length, 46);
+  for (const exam of TEIL2_EXAMS) {
+    assert.ok(exam.originalArticleDe.length > 80, `Exam #${exam.id} missing originalArticleDe`);
+    assert.ok(exam.pdfPage > 0, `Exam #${exam.id} missing pdfPage`);
+    assert.ok(exam.paperTitle.length > 2, `Exam #${exam.id} missing paperTitle`);
+
+    const segments = segmentExamPaperForLaserScanner(exam.originalArticleDe, {
+      slot2: exam.surgicalSlots.slot2.origSub,
+      slot3: exam.surgicalSlots.slot3.origSub,
+      slot4: exam.surgicalSlots.slot4.origSub,
+      slot5: exam.surgicalSlots.slot5.origSub,
+    });
+    const matchedKeys = segments.filter((s) => s.slotKey !== null).map((s) => s.slotKey);
+    assert.equal(
+      matchedKeys.length,
+      4,
+      `Exam #${exam.id} (${exam.titleDe}) expected 4 highlighted laser segments in originalArticleDe, got ${matchedKeys.length}: ${matchedKeys.join(', ')}`
+    );
+
+    const roundsWithJoker = build6RoundsForExam(exam, {
+      useUniversalMoroccoJoker: true,
+      useVerbatimPaperClauses: true,
+    });
+    assert.equal(roundsWithJoker.length, 6);
+    assert.equal(roundsWithJoker[4].slotContent, UNIVERSAL_MOROCCO_JOKER.de);
+  }
+});
+
 
