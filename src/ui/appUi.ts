@@ -226,10 +226,44 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function renderClauseWithGoldVerb(clause: string): string {
-  const { prefix, finalVerb, punctuation } = splitClauseFinalVerb(clause);
+function renderClauseWithGoldVerb(clause: string, explicitFinalVerb?: string): string {
+  const { prefix, finalVerb, punctuation } = splitClauseFinalVerb(clause, explicitFinalVerb);
   if (!finalVerb) return `<span>${escapeHtml(clause)}</span>`;
-  return `<span>${escapeHtml(prefix)} </span><span class="verb-gold-badge inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/25 border border-amber-400 text-amber-300 font-bold font-mono-de" title="Verb am Ende (الفعل المصرف فـ آخر الجملة)">${escapeHtml(finalVerb)}</span><span>${escapeHtml(punctuation)}</span>`;
+  const prefixHtml = prefix ? `<span>${escapeHtml(prefix)} </span>` : '';
+  return `${prefixHtml}<span class="verb-gold-badge inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/25 border border-amber-400 text-amber-300 font-bold font-mono-de" title="Verb am Ende (الفعل المصرف فـ آخر الجملة)">[${escapeHtml(finalVerb)}]</span><span>${escapeHtml(punctuation)}</span>`;
+}
+
+/**
+ * Highlights `origVerb` inside `origSub` in a red badge so the student immediately sees
+ * the exact verb inside the yellow-highlighted sentence in the real PDF text.
+ */
+function renderOrigSubWithRedVerb(origSub: string, origVerb: string): string {
+  if (!origSub) return '';
+  const cleanVerb = (origVerb || '').trim();
+  if (!cleanVerb) return escapeHtml(origSub);
+
+  const escapedVerbRegex = cleanVerb.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const boundaryRegex = new RegExp(`(^|[^a-zA-ZäöüÄÖÜß])(${escapedVerbRegex})(?=$|[^a-zA-ZäöüÄÖÜß])`, 'i');
+  const match = origSub.match(boundaryRegex);
+
+  if (match && match.index !== undefined) {
+    const startIdx = match.index + match[1].length;
+    const endIdx = startIdx + match[2].length;
+    const before = origSub.slice(0, startIdx);
+    const matched = origSub.slice(startIdx, endIdx);
+    const after = origSub.slice(endIdx);
+    return `${escapeHtml(before)}<span class="orig-verb-red-badge inline-block px-1.5 py-0.5 mx-0.5 rounded bg-red-600 text-white font-extrabold font-mono-de shadow-sm" title="الفعل فـ الورقة الأصلية: ${escapeHtml(cleanVerb)}">${escapeHtml(matched)}</span>${escapeHtml(after)}`;
+  }
+
+  const lowerIdx = origSub.toLowerCase().indexOf(cleanVerb.toLowerCase());
+  if (lowerIdx !== -1) {
+    const before = origSub.slice(0, lowerIdx);
+    const matched = origSub.slice(lowerIdx, lowerIdx + cleanVerb.length);
+    const after = origSub.slice(lowerIdx + cleanVerb.length);
+    return `${escapeHtml(before)}<span class="orig-verb-red-badge inline-block px-1.5 py-0.5 mx-0.5 rounded bg-red-600 text-white font-extrabold font-mono-de shadow-sm" title="الفعل فـ الورقة الأصلية: ${escapeHtml(cleanVerb)}">${escapeHtml(matched)}</span>${escapeHtml(after)}`;
+  }
+
+  return escapeHtml(origSub);
 }
 
 /**
@@ -300,7 +334,7 @@ export class TelcMasterAppUI {
       selectedBankSlotKey: null,
       distractorErrorMsg: null,
       useUniversalJokerRonde6: false,
-      useUniversalMoroccoJokerRonde5: false,
+      useUniversalMoroccoJokerRonde5: true,
       useVerbatimPaperPhotocopyMode: true,
       laserActiveSlotFilter: 'ALL',
       voiceActiveRound: 1,
@@ -344,9 +378,9 @@ export class TelcMasterAppUI {
       aiConversation: [
         {
           sender: 'partner',
-          textDe: 'Hallo Mohammed! Lass uns mit Teil 2 (Thema #1: Fast Food) starten. Bitte sprich oder schreib deine Ronde 1 (Einleitung + Fikra 1 aus dem Text)!',
-          darijaTip: '🎙️ برك على "هضر بصوتك" وقول الجولة 1: Der Text befasst sich mit dem Thema „Fast Food“. Zuerst wird beschrieben, dass...',
-          correctedSentenceDe: `Der Text befasst sich mit dem Thema „${exam1.slot1Theme}“. Zuerst wird beschrieben, dass ${exam1.slot2Point1}. Welche Informationen hast du noch gefunden?`
+          textDe: 'Hallo Mohammed! Lass uns mit Teil 2 (Thema #1: Fast Food kann süchtig machen) starten. Bitte sprich oder schreib deine Ronde 1 (Einleitung + Fikra 1 aus dem Text)!',
+          darijaTip: '🎙️ برك على "هضر بصوتك" وقول الجولة 1: In meinem Text geht es um das Thema „Fast Food kann süchtig machen“. Der Autor erwähnt, dass...',
+          correctedSentenceDe: `In meinem Text geht es um das Thema „${exam1.slot1Theme}“. Der Autor erwähnt, dass ${exam1.slot2Point1}. Was steht in deinem Text?`
         }
       ],
 
@@ -993,18 +1027,20 @@ export class TelcMasterAppUI {
     const r4 = rounds[3];
     const r5 = rounds[4];
 
-    const distractor1 = buildDistractorWithMiddleVerb(r3.slotContent);
-    const distractor2 = buildDistractorWithMiddleVerb(r4.slotContent);
+    const [trap1Text, trap2Text] = exam.trapCards || [
+      buildDistractorWithMiddleVerb(r3.slotContent),
+      buildDistractorWithMiddleVerb(r4.slotContent),
+    ];
 
     const bankCards = [
-      { key: 'slot1', label: '🎯 SLOT 1 (Smiya)', text: r1.slotContent, isTrap: false },
-      { key: 'slot2', label: `📄 SLOT 2 (Fikra 1 • الحالة ${exam.surgicalSlots.slot2.caseNum})`, text: r1.slot2Content || exam.slot2Point1, isTrap: false },
-      { key: 'slot3', label: `📄 SLOT 3 (Fikra 2 • الحالة ${exam.surgicalSlots.slot3.caseNum})`, text: r2.slotContent, isTrap: false },
-      { key: 'slot4', label: `✅ SLOT 4 (Ijabia • الحالة ${exam.surgicalSlots.slot4.caseNum})`, text: r3.slotContent, isTrap: false },
-      { key: 'slot5', label: `⚠️ SLOT 5 (Salbia • الحالة ${exam.surgicalSlots.slot5.caseNum})`, text: r4.slotContent, isTrap: false },
-      { key: 'slot6', label: '🇲🇦 SLOT 6 (Lmaghrib)', text: r5.slotContent, isTrap: false },
-      { key: 'trap1', label: '🪤 فخ نحوي 1 (الفعل فالوسط!)', text: distractor1, isTrap: true },
-      { key: 'trap2', label: '🪤 فخ نحوي 2 (الفعل فالوسط!)', text: distractor2, isTrap: true }
+      { key: 'slot1', label: '🎯 SLOT 1 (Smiya mn lwarqa)', caseBadge: 'العنوان الحرفي من الورقة', text: r1.slotContent, isTrap: false },
+      { key: 'slot2', label: '📄 SLOT 2 (Fikra 1)', caseBadge: exam.slot2_fikra1.caseBadge, text: r1.slot2Content || exam.slot2Point1, isTrap: false },
+      { key: 'slot3', label: '📄 SLOT 3 (Fikra 2)', caseBadge: exam.slot3_fikra2.caseBadge, text: r2.slotContent, isTrap: false },
+      { key: 'slot4', label: '✅ SLOT 4 (Ijabia / Vorteil)', caseBadge: exam.slot4_ijabia.caseBadge, text: r3.slotContent, isTrap: false },
+      { key: 'slot5', label: '⚠️ SLOT 5 (Salbia / Nachteil)', caseBadge: exam.slot5_salbia.caseBadge, text: r4.slotContent, isTrap: false },
+      { key: 'slot6', label: '🇲🇦 SLOT 6 (Lmaghrib)', caseBadge: 'جوكر المغرب الموحد (0 حفاظة)', text: r5.slotContent, isTrap: false },
+      { key: 'trap1', label: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)', caseBadge: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)', text: trap1Text, isTrap: true },
+      { key: 'trap2', label: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)', caseBadge: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)', text: trap2Text, isTrap: true }
     ];
 
     return `
@@ -1040,18 +1076,34 @@ export class TelcMasterAppUI {
                     data-slot-key="${card.key}"
                     data-is-trap="${card.isTrap ? '1' : '0'}"
                     data-text="${escapeHtml(card.text)}"
-                    aria-label="${card.label}"
+                    aria-label="${escapeHtml(card.label)}"
                     class="w-full text-left p-3 rounded-xl border transition cursor-pointer ${
-                      isAlreadyPlaced
+                      card.isTrap
+                        ? 'studio-elevated border-rose-500/40 hover:border-rose-500'
+                        : isAlreadyPlaced
                         ? 'bg-emerald-500/15 border-emerald-500/50 opacity-85'
                         : 'studio-elevated hover:border-amber-400'
                     }"
                   >
-                    <div class="flex items-center justify-between gap-2 mb-1">
-                      <span class="text-[11px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300" dir="rtl">
-                        ${isAlreadyPlaced ? '✅ محطوط فـ بلاصتو' : '👇 كليكي باش تعمر الفراغ'}
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+                      <span class="text-[11px] font-bold px-2 py-0.5 rounded ${
+                        card.isTrap
+                          ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40'
+                          : 'bg-indigo-500/20 text-indigo-300'
+                      }" dir="rtl">
+                        ${
+                          card.isTrap
+                            ? escapeHtml(card.label)
+                            : isAlreadyPlaced
+                            ? `✅ محطوط فـ بلاصتو • ${escapeHtml(card.caseBadge)}`
+                            : `👇 ${escapeHtml(card.caseBadge)}`
+                        }
                       </span>
-                      <span class="text-[11px] font-mono-de opacity-75" dir="ltr">${escapeHtml(card.label)}</span>
+                      ${
+                        card.isTrap
+                          ? ''
+                          : `<span class="text-[11px] font-mono-de opacity-75" dir="ltr">${escapeHtml(card.label)}</span>`
+                      }
                     </div>
                     <div class="text-xs sm:text-sm font-medium" dir="ltr">
                       ${escapeHtml(card.text)}
@@ -1115,13 +1167,7 @@ export class TelcMasterAppUI {
                                 ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
                                 : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                             }" dir="rtl">
-                              🔬 الحالة ${surgical.caseNum}: ${
-                              surgical.caseNum === 1
-                                ? 'واجدة 100% فالورقة'
-                                : surgical.caseNum === 2
-                                ? 'نقل فعل واحد للأخير'
-                                : 'جمع الفعل المنفصل فالأخير'
-                            }
+                              🔬 ${escapeHtml(surgical.caseBadge)}
                             </span>`
                           : ''
                       }
@@ -1198,8 +1244,7 @@ export class TelcMasterAppUI {
                         ? `<span class="text-amber-300 font-semibold">${escapeHtml(TEIL2_RONDE6_UNIVERSAL_JOKER.de)}</span>`
                         : isRonde1
                         ? `
-                          <span>${escapeHtml(round.fixedTemplateBefore)}</span>
-                          <button
+                          <span>${escapeHtml(round.fixedTemplateBefore)}</span><button
                             type="button"
                             data-action="quick-fill-slot"
                             data-slot-key="slot1"
@@ -1208,11 +1253,7 @@ export class TelcMasterAppUI {
                                 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
                                 : 'bg-amber-500/15 border-dashed border-amber-400 text-amber-300'
                             }"
-                          >
-                            ${slot1Val ? `🎯 ${escapeHtml(slot1Val)}` : `🎯 [ ${escapeHtml(round.slotLabel)} — كليكي باش تعمرو ]`}
-                          </button>
-                          <span>${escapeHtml(round.fixedTemplateMiddle || '')}</span>
-                          <button
+                          >${slot1Val ? `🎯 ${escapeHtml(slot1Val)}` : `🎯 [ ${escapeHtml(round.slotLabel)} — كليكي باش تعمرو ]`}</button><span>${escapeHtml(round.fixedTemplateMiddle || '')}</span><button
                             type="button"
                             data-action="quick-fill-slot"
                             data-slot-key="slot2"
@@ -1221,16 +1262,12 @@ export class TelcMasterAppUI {
                                 ? 'bg-emerald-500/20 border-emerald-400 text-white'
                                 : 'bg-amber-500/15 border-dashed border-amber-400 text-amber-300'
                             }"
-                          >
-                            ${slot2Val ? renderClauseWithGoldVerb(slot2Val) : `📄 [ ${escapeHtml(round.slot2Label || '')} — كليكي باش تعمرو ]`}
-                          </button>
-                          <span>${escapeHtml(round.fixedTemplateAfter)}</span>
+                          >${slot2Val ? renderClauseWithGoldVerb(slot2Val, round.slot2FinalVerb) : `📄 [ ${escapeHtml(round.slot2Label || '')} — كليكي باش تعمرو ]`}</button><span>${escapeHtml(round.fixedTemplateAfter)}</span>
                         `
                         : isRonde6
                         ? `<span>${escapeHtml(round.fixedTemplateBefore)}</span>`
                         : `
-                          <span>${escapeHtml(round.fixedTemplateBefore)}</span>
-                          <button
+                          <span>${escapeHtml(round.fixedTemplateBefore)}</span><button
                             type="button"
                             data-action="quick-fill-slot"
                             data-slot-key="${slotKey}"
@@ -1239,10 +1276,7 @@ export class TelcMasterAppUI {
                                 ? 'bg-emerald-500/20 border-emerald-400 text-white'
                                 : 'bg-amber-500/15 border-dashed border-amber-400 text-amber-300'
                             }"
-                          >
-                            ${slot1Val ? renderClauseWithGoldVerb(slot1Val) : `🎯 [ ${escapeHtml(round.slotLabel)} — كليكي باش تعمرو ]`}
-                          </button>
-                          <span>${escapeHtml(round.fixedTemplateAfter)}</span>
+                          >${slot1Val ? renderClauseWithGoldVerb(slot1Val, round.finalVerb) : `🎯 [ ${escapeHtml(round.slotLabel)} — كليكي باش تعمرو ]`}</button><span>${escapeHtml(round.fixedTemplateAfter)}</span>
                         `
                     }
                     </div>
@@ -1264,14 +1298,14 @@ export class TelcMasterAppUI {
                       ? `<div class="p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/30 space-y-1.5 text-xs">
                           <div class="flex flex-wrap items-center justify-between gap-2" dir="rtl">
                             <span class="font-extrabold text-indigo-300">
-                              🔬 الديطاي الجراحي (من ورقة الامتحان صفحة ${exam.pdfPage}):
+                              🔬 الديطاي الجراحي (من ورقة الامتحان صفحة ${exam.pdfPage} • ${escapeHtml(surgical.caseBadge)}):
                             </span>
                             <span class="font-mono-de text-[11px] px-2 py-0.5 rounded bg-black/40 text-amber-300" dir="ltr">
                               Verb im Text: „${escapeHtml(surgical.origVerb)}“ ➔ am Ende: „${escapeHtml(surgical.finalVerb)}“
                             </span>
                           </div>
-                          <div class="text-xs font-mono-de text-zinc-300 bg-black/30 px-2.5 py-1.5 rounded-lg" dir="ltr">
-                            📄 <strong>Original im Blatt:</strong> „${escapeHtml(surgical.origSub)}“
+                          <div class="text-xs font-mono-de text-zinc-900 bg-[#fef08a] px-2.5 py-1.5 rounded-lg font-semibold" dir="ltr">
+                            📄 <strong>Original im Blatt:</strong> „${renderOrigSubWithRedVerb(surgical.origSub, surgical.origVerb)}“
                           </div>
                           <div class="text-xs font-semibold text-emerald-300" dir="rtl">
                             🛠️ ${escapeHtml(surgical.surgicalDetail)}
@@ -1339,14 +1373,14 @@ export class TelcMasterAppUI {
     const surgicalCards: Array<{ key: LaserSlotKey; titleDe: string; titleAr: string; colorClass: string; slot: typeof exam.surgicalSlots.slot2 }> = [
       {
         key: 'slot2',
-        titleDe: 'SLOT 2 (Ronde 1 • Zuerst wird beschrieben, dass ...)',
+        titleDe: 'SLOT 2 (Ronde 1 • Der Autor erwähnt, dass ...)',
         titleAr: 'الفكرة 1 المسروقة حرفياً من الورقة',
         colorClass: 'border-l-4 border-l-yellow-400',
         slot: exam.surgicalSlots.slot2,
       },
       {
         key: 'slot3',
-        titleDe: 'SLOT 3 (Ronde 2 • Außerdem wird im Text noch erwähnt, dass ...)',
+        titleDe: 'SLOT 3 (Ronde 2 • In meinem Artikel steht auch, dass ...)',
         titleAr: 'الفكرة 2 المسروقة حرفياً من الورقة',
         colorClass: 'border-l-4 border-l-sky-400',
         slot: exam.surgicalSlots.slot3,
@@ -1417,11 +1451,11 @@ export class TelcMasterAppUI {
             </div>
           </div>
 
-          <!-- Full Verbatim German Exam Article with Yellow Marker Highlighting -->
+          <!-- Full Verbatim German Exam Article with Bright Yellow Marker (#fef08a) & Red origVerb Badge -->
           <div class="p-4 rounded-xl bg-black/30 border border-white/10 text-sm sm:text-base leading-relaxed space-y-3" dir="ltr" data-testid="laser-verbatim-article">
             <div class="text-[11px] font-mono-de uppercase tracking-wider text-zinc-400 flex items-center justify-between">
               <span>Original-Prüfungstext (Lesetext Teil 2):</span>
-              <span dir="rtl" class="text-amber-300">كليكي على أي سطر ملون باش تسمعو!</span>
+              <span dir="rtl" class="text-amber-300">كليكي على أي سطر ملون بالماركور الأصفر باش تسمعو!</span>
             </div>
             <p class="leading-8">
               ${segments
@@ -1430,18 +1464,21 @@ export class TelcMasterAppUI {
                     return `<span>${escapeHtml(seg.text)}</span>`;
                   }
                   const meta = slotBadgeMeta[seg.slotKey];
+                  const slotObj = exam.surgicalSlots[seg.slotKey];
                   const isEmphasized = activeFilter === 'ALL' || activeFilter === seg.slotKey;
                   return `<mark
                     data-action="set-laser-slot-filter"
                     data-filter="${seg.slotKey}"
                     title="${meta.badgeDe} — ${meta.badgeAr}"
+                    style="${isEmphasized ? 'background-color: #fef08a; color: #111827;' : ''}"
                     class="px-1.5 py-0.5 rounded cursor-pointer transition ${
                       isEmphasized
-                        ? `${meta.markClass} font-bold ring-1 ring-amber-300/50`
-                        : 'bg-white/5 text-zinc-300 opacity-60'
+                        ? 'font-bold ring-2 ring-amber-400 shadow-sm'
+                        : 'bg-white/10 text-zinc-300 opacity-60'
                     }"
-                  ><span class="inline-block px-1.5 py-0.2 mr-1 rounded bg-black/60 text-[10px] font-mono-de uppercase text-amber-300 align-middle">[${meta.badgeDe}]</span>${escapeHtml(
-                    seg.text
+                  ><span class="inline-block px-1.5 py-0.5 mr-1 rounded bg-zinc-900 text-[10px] font-mono-de uppercase text-amber-300 align-middle">[${meta.badgeDe}]</span>${renderOrigSubWithRedVerb(
+                    seg.text,
+                    slotObj.origVerb
                   )}</mark>`;
                 })
                 .join('')}
@@ -1451,7 +1488,7 @@ export class TelcMasterAppUI {
           <div class="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs sm:text-sm space-y-1" dir="rtl">
             <div class="font-extrabold text-emerald-400">🎯 سر المهنة بـ الماركور الأصفر فـ 20 دقيقة د التحضير:</div>
             <p>
-              هادو هما الـ 4 جمل الحرفية وسط الورقة الحقيقية ديال الامتحان! سطر عليهم بـ الماركور، وطبق عليهم الحالات الـ 3 (إما الفعل واجد فاللخر، أو رمي الفعل المصرف للخر مورا <code>dass</code>)!
+              هادو هما الـ 4 جمل الحرفية وسط الورقة الحقيقية ديال الامتحان ملونين بـ الماركور الأصفر (<code>#fef08a</code>) والفعل الأصلي ملون بالأحمر! طبق عليهم الحالات الـ 3 (إما الفعل واجد فاللخر، أو رمي الفعل المصرف للخر مورا <code>dass</code>)!
             </p>
           </div>
         </div>
@@ -1490,19 +1527,13 @@ export class TelcMasterAppUI {
                         ? 'bg-sky-500/20 text-sky-300'
                         : 'bg-amber-500/20 text-amber-300'
                     }" dir="rtl">
-                      الحالة ${s.caseNum} (${
-                        s.caseNum === 1
-                          ? 'جاهزة 100% فالورقة'
-                          : s.caseNum === 2
-                          ? 'نقل فعل واحد للأخير'
-                          : 'فعل منفصل فـ الأخير'
-                      })
+                      🔬 ${escapeHtml(s.caseBadge)}
                     </span>
                   </div>
 
-                  <div class="p-2.5 rounded-xl bg-black/30 border border-white/10 text-xs space-y-1" dir="ltr">
-                    <div class="text-zinc-400">📄 <strong>Original im Prüfungstext:</strong></div>
-                    <div class="font-mono-de text-zinc-200">„${escapeHtml(s.origSub)}“</div>
+                  <div class="p-2.5 rounded-xl bg-[#fef08a] border border-amber-400 text-zinc-900 text-xs space-y-1" dir="ltr">
+                    <div class="text-zinc-700 font-bold">📄 <strong>Original im Prüfungstext (Sprechen_B2_2026.pdf):</strong></div>
+                    <div class="font-mono-de font-bold">„${renderOrigSubWithRedVerb(s.origSub, s.origVerb)}“</div>
                   </div>
 
                   <div class="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/40 text-xs sm:text-sm space-y-1" dir="ltr">
@@ -1518,7 +1549,7 @@ export class TelcMasterAppUI {
                       </button>
                     </div>
                     <div class="font-bold text-white">
-                      ..., dass ${renderClauseWithGoldVerb(s.dassClauseDe)}.
+                      ..., dass ${renderClauseWithGoldVerb(s.dassClauseDe, s.finalVerb)}.
                     </div>
                   </div>
 
@@ -1548,13 +1579,13 @@ export class TelcMasterAppUI {
             </div>
             <div class="p-2.5 rounded-xl bg-black/30 border border-white/10 text-xs space-y-1" dir="ltr">
               <div class="text-amber-300 font-bold">🃏 الجوكر المغربي الموحد (خدام مع كاع الـ 46 موضوع بلا حفاظة!):</div>
-              <div>„In meinem Heimatland Marokko ist es auch oft so, dass ${renderClauseWithGoldVerb(exam.moroccoUniversalJokerDe)}.“</div>
-              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.moroccoUniversalJokerAr)}</div>
+              <div>„In meinem Heimatland Marokko ist es so, dass ${renderClauseWithGoldVerb(exam.slot6_marokko.dassClause, exam.slot6_marokko.finalVerb)}.“</div>
+              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.slot6_marokko.arMeaning)}</div>
             </div>
             <div class="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-xs space-y-1" dir="ltr">
               <div class="text-emerald-300 font-bold">🇲🇦 الجملة الخاصة بهاد الموضوع فـ المغرب:</div>
-              <div>„In meinem Heimatland Marokko ist es auch oft so, dass ${renderClauseWithGoldVerb(exam.slot6Morocco)}.“</div>
-              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.slot6Darija)}</div>
+              <div>„In meinem Heimatland Marokko ist es so, dass ${renderClauseWithGoldVerb(exam.slot6_marokko.specificMoroccoDe)}.“</div>
+              <div class="text-zinc-300" dir="rtl">${escapeHtml(exam.slot6_marokko.specificMoroccoAr)}</div>
             </div>
           </div>
         </div>
@@ -4385,7 +4416,7 @@ export class TelcMasterAppUI {
         case 'laser-scan-sound': {
           sfx.playLaserBeam();
           speakGermanText(
-            `Der Text befasst sich mit dem Thema ${this.getCurrentExam().slot1Theme}. Zuerst wird beschrieben, ${this.getCurrentExam().slot2Point1}`,
+            `In meinem Text geht es um das Thema ${this.getCurrentExam().slot1Theme}. Der Autor erwähnt, dass ${this.getCurrentExam().slot2Point1}. Was steht in deinem Text?`,
             1.0
           );
           break;

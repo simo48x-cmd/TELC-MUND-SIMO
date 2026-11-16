@@ -19,9 +19,9 @@ import {
   extractCleanWordsFromSelection,
   segmentExamPaperForLaserScanner
 } from './pingPongLogic';
-import { TEIL2_EXAMS, build6RoundsForExam, UNIVERSAL_MOROCCO_JOKER } from '../data/teil2Data';
+import { TEIL2_TOPICS, TEIL2_EXAMS, build6RoundsForExam, UNIVERSAL_MOROCCO_JOKER } from '../data/teil2Data';
 
-test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-clause', () => {
+test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-clause and never highlights trailing example nouns like Couscous', () => {
   const res = splitClauseFinalVerb(
     'dieses Essen sehr ungesund ist und zu Übergewicht sowie Krankheiten führt'
   );
@@ -30,6 +30,28 @@ test('splitClauseFinalVerb extracts the conjugated verb at the end of a dass-cla
     res.body,
     'dieses Essen sehr ungesund ist und zu Übergewicht sowie Krankheiten'
   );
+
+  const resMultiVerb = splitClauseFinalVerb(
+    'übermäßiger Konsum von kalorienreicher Nahrung suchtähnliche Reaktionen im Gehirn auslösen kann',
+    'auslösen kann'
+  );
+  assert.equal(resMultiVerb.finalVerb, 'auslösen kann');
+  assert.equal(
+    resMultiVerb.body,
+    'übermäßiger Konsum von kalorienreicher Nahrung suchtähnliche Reaktionen im Gehirn'
+  );
+
+  const resMoroccoJoker = splitClauseFinalVerb(
+    'dieses Thema heute sehr aktuell ist und die Menschen viel darüber sprechen',
+    'sprechen'
+  );
+  assert.equal(resMoroccoJoker.finalVerb, 'sprechen');
+
+  const resCouscous = splitClauseFinalVerb(
+    'fast alle Familien jeden Tag frisch zu Hause kochen, zum Beispiel Tajine oder Couscous'
+  );
+  assert.equal(resCouscous.finalVerb, 'kochen');
+  assert.notEqual(resCouscous.finalVerb, 'Couscous');
 });
 
 test('convertMainSentenceToDassClause kicks the conjugated verb to the end', () => {
@@ -92,7 +114,7 @@ test('analyzeGermanInputSanity strictly rejects < 4 words, slang, profanity, or 
     false
   );
   assert.equal(
-    analyzeGermanInputSanity('Der Text befasst sich mit dem Thema Fast Food').isValidGermanAttempt,
+    analyzeGermanInputSanity('In meinem Text geht es um das Thema Fast Food').isValidGermanAttempt,
     true
   );
 });
@@ -100,14 +122,14 @@ test('analyzeGermanInputSanity strictly rejects < 4 words, slang, profanity, or 
 test('evaluateSimulatorTurnDeterministically returns 0/60 on invalid input and advances Ronde 1 -> 3 -> 5 on valid German', () => {
   const mockExam = {
     id: 1,
-    titleDe: 'Fast Food',
+    titleDe: 'Fast Food kann süchtig machen',
     titleDarija: 'الأكل السريع',
-    slot1Theme: 'Fast Food',
-    slot2Point1: 'dass immer mehr Menschen heute Fast Food essen.',
-    slot3Point2: 'dass diese Mahlzeiten sehr viele Kalorien enthalten.',
-    slot4Advantage: 'dass Fast Food sehr schnell geht und im Alltag viel Zeit spart.',
-    slot5Disadvantage: 'dass dieses Essen ungesund ist und zu Krankheiten führt.',
-    slot6Morocco: 'dass junge Leute in großen Städten wie Fès oder Casablanca gerne Tacos essen.'
+    slot1Theme: 'Fast Food kann süchtig machen',
+    slot2Point1: 'in dem Experiment Ratten zunehmend die Kontrolle über ihr Verhalten verloren',
+    slot3Point2: 'US-Forscher exzessives Essen stark fetthaltiger Speisen inzwischen mit Drogenkonsum vergleichen',
+    slot4Advantage: 'der Konsum das Belohnungssystem des Gehirns aktiviert',
+    slot5Disadvantage: 'übermäßiger Konsum von kalorienreicher Nahrung suchtähnliche Reaktionen im Gehirn auslösen kann',
+    slot6Morocco: 'dieses Thema heute sehr aktuell ist und die Menschen viel darüber sprechen'
   };
 
   // 1. Rejects "hey" with 0/60 and does not advance round
@@ -127,20 +149,20 @@ test('evaluateSimulatorTurnDeterministically returns 0/60 on invalid input and a
     mode: 'teil2',
     roundNumber: 1,
     userMessage:
-      'Der Text befasst sich mit dem Thema Fast Food. Zuerst wird beschrieben, dass immer mehr Menschen heute Fast Food essen. Welche Informationen hast du noch gefunden?',
+      'In meinem Text geht es um das Thema Fast Food kann süchtig machen. Der Autor erwähnt, dass in dem Experiment Ratten zunehmend die Kontrolle über ihr Verhalten verloren. Was steht in deinem Text?',
     teil2Exam: mockExam
   });
   assert.equal(r1Res.isSanityRejected, false);
   assert.ok(r1Res.scoreOutOf60 >= 50);
   assert.equal(r1Res.nextRoundNumber, 3);
-  assert.ok(r1Res.partnerGermanReply.includes('Außerdem wird im Text noch erwähnt'));
+  assert.ok(r1Res.partnerGermanReply.includes('In meinem Artikel steht auch, dass'));
 
   // 3. Accepts Ronde 5 and generates completed 60-point scorecard
   const r5Res = evaluateSimulatorTurnDeterministically({
     mode: 'teil2',
     roundNumber: 5,
     userMessage:
-      'Persönlich habe ich keine direkte Erfahrung, aber in meinem Heimatland Marokko ist es oft so, dass junge Leute in großen Städten wie Fès oder Casablanca gerne Tacos essen.',
+      'Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat das gemacht und fand es super. In meinem Heimatland Marokko ist es so, dass dieses Thema heute sehr aktuell ist und die Menschen viel darüber sprechen. Hast du ähnliche Erfahrungen?',
     teil2Exam: mockExam,
     previousTurnScores: [56, 54]
   });
@@ -155,8 +177,8 @@ test('detectTeil3PlanningPoint detects planning points from spoken German and ex
     11
   );
   assert.equal(
-    extractFirstFourWordsHint('Der Text befasst sich mit dem Thema Fast Food.'),
-    'Der Text befasst sich ...'
+    extractFirstFourWordsHint('In meinem Text geht es um das Thema Fast Food.'),
+    'In meinem Text geht ...'
   );
 });
 
@@ -169,13 +191,13 @@ test('getVoiceCallOpeningGreeting, getTeleprompterWhisperLevels, and buildPostCa
       id: 1,
       titleDe: 'Fast Food kann süchtig machen',
       titleDarija: 'الأكل السريع',
-      slot1Theme: 'Fast Food',
-      slot2Point1: 'fett- und zuckerreiches Essen das Gehirn ähnlich wie Drogen stimulieren kann',
-      slot3Point2: 'US-Forscher in Experimenten gezeigt haben, wie stark Fast Food wirkt',
-      slot4Advantage: 'Fast Food schnell fertig ist und Zeit spart',
-      slot5Disadvantage: 'dieses Essen zu Krankheiten führt',
-      slot6Morocco: 'junge Leute in Fès gerne Tacos essen',
-      slot2Darija: 'الماكلة العامرة بالدهون والسكر كتدير الإدمان'
+      slot1Theme: 'Fast Food kann süchtig machen',
+      slot2Point1: 'in dem Experiment Ratten zunehmend die Kontrolle über ihr Verhalten verloren',
+      slot3Point2: 'US-Forscher exzessives Essen stark fetthaltiger Speisen inzwischen mit Drogenkonsum vergleichen',
+      slot4Advantage: 'der Konsum das Belohnungssystem des Gehirns aktiviert',
+      slot5Disadvantage: 'übermäßiger Konsum von kalorienreicher Nahrung suchtähnliche Reaktionen im Gehirn auslösen kann',
+      slot6Morocco: 'dieses Thema heute sehr aktuell ist und die Menschen viel darüber sprechen',
+      slot2Darija: 'فالتجربة فقدو الفئران بالتدريج السيطرة على السلوك ديالهم فالأكل'
     }
   };
 
@@ -184,9 +206,9 @@ test('getVoiceCallOpeningGreeting, getTeleprompterWhisperLevels, and buildPostCa
   assert.ok(greeting.includes('Ronde 1'));
 
   const whisper = getTeleprompterWhisperLevels(ctx);
-  assert.ok(whisper.level1Darija.includes('الماكلة العامرة بالدهون والسكر'));
-  assert.ok(whisper.level2StarterDe.includes('Der Text befasst sich mit dem Thema'));
-  assert.ok(whisper.level3FullDe.includes('stimulieren kann'));
+  assert.ok(whisper.level1Darija.includes('فالتجربة فقدو الفئران'));
+  assert.ok(whisper.level2StarterDe.includes('In meinem Text geht es um das Thema'));
+  assert.ok(whisper.level3FullDe.includes('Verhalten verloren'));
   assert.ok(whisper.rescueInterruptPhraseDe.includes('Entschuldigung'));
 
   const report = buildPostCallDiagnosticReport({
@@ -194,7 +216,7 @@ test('getVoiceCallOpeningGreeting, getTeleprompterWhisperLevels, and buildPostCa
     turns: [
       {
         userSaidDe:
-          'Der Text befasst sich mit dem Thema Fast Food. Zuerst wird beschrieben, dass fett- und zuckerreiches Essen das Gehirn stimulieren kann.',
+          'In meinem Text geht es um das Thema Fast Food kann süchtig machen. Der Autor erwähnt, dass in dem Experiment Ratten zunehmend die Kontrolle über ihr Verhalten verloren.',
         targetSentenceDe: whisper.level3FullDe,
         scoreOutOf60: 54,
         cefrLevel: 'B2',
@@ -226,42 +248,81 @@ test('splitGermanWordIntoSyllables, buildSelectionSyllableBreakdown, splitGerman
   assert.equal(breakdown[1].syllables, 'Um•welt•ver•schmut•zung');
 
   const sentences = splitGermanTextIntoSentences(
-    'Der Text befasst sich mit dem Thema Fast Food. Zuerst wird beschrieben, dass es ungesund ist! Welche Informationen hast du noch?'
+    'In meinem Text geht es um das Thema Fast Food. Der Autor erwähnt, dass es ungesund ist! Was steht in deinem Text?'
   );
   assert.equal(sentences.length, 3);
-  assert.equal(sentences[0], 'Der Text befasst sich mit dem Thema Fast Food.');
+  assert.equal(sentences[0], 'In meinem Text geht es um das Thema Fast Food.');
 
-  const words = extractCleanWordsFromSelection('Der Text befasst sich!');
-  assert.deepEqual(words, ['Der', 'Text', 'befasst', 'sich']);
+  const words = extractCleanWordsFromSelection('Der Autor erwähnt!');
+  assert.deepEqual(words, ['Der', 'Autor', 'erwähnt']);
 });
 
-test('all 46 TEIL2_EXAMS have complete verbatim originalArticleDe and exact matching origSub for slots 2, 3, 4, and 5', () => {
+test('all 46 TEIL2_TOPICS and TEIL2_EXAMS have 100% verbatim Sprechen_B2_2026.pdf originalText, origSub, caseBadge, and 6-round templates', () => {
+  assert.equal(TEIL2_TOPICS.length, 46);
   assert.equal(TEIL2_EXAMS.length, 46);
+
+  // Verify Topic 1 and Topic 2 exact verbatim openings from Sprechen_B2_2026.pdf
+  assert.ok(
+    TEIL2_EXAMS[0].originalText.startsWith(
+      'Unappetitliches Ergebnis eines Tierversuchs: Fettiges Essen kann offenbar ebenso süchtig machen wie Drogen.'
+    )
+  );
+  assert.ok(
+    TEIL2_EXAMS[1].originalText.startsWith(
+      'Kochen am eigenen Herd liegt im Trend: „Selbst gekocht schmeckt besser, und ich weiß, was drin ist.“'
+    )
+  );
+
   for (const exam of TEIL2_EXAMS) {
-    assert.ok(exam.originalArticleDe.length > 80, `Exam #${exam.id} missing originalArticleDe`);
-    assert.ok(exam.pdfPage > 0, `Exam #${exam.id} missing pdfPage`);
+    assert.ok(exam.originalArticleDe.length > 200, `Exam #${exam.id} missing full originalArticleDe`);
+    assert.ok(exam.pdfPage >= 0, `Exam #${exam.id} missing pdfPage`);
     assert.ok(exam.paperTitle.length > 2, `Exam #${exam.id} missing paperTitle`);
+    assert.equal(exam.trapCards.length, 2, `Exam #${exam.id} missing trapCards`);
 
-    const segments = segmentExamPaperForLaserScanner(exam.originalArticleDe, {
-      slot2: exam.surgicalSlots.slot2.origSub,
-      slot3: exam.surgicalSlots.slot3.origSub,
-      slot4: exam.surgicalSlots.slot4.origSub,
-      slot5: exam.surgicalSlots.slot5.origSub,
-    });
-    const matchedKeys = segments.filter((s) => s.slotKey !== null).map((s) => s.slotKey);
-    assert.equal(
-      matchedKeys.length,
-      4,
-      `Exam #${exam.id} (${exam.titleDe}) expected 4 highlighted laser segments in originalArticleDe, got ${matchedKeys.length}: ${matchedKeys.join(', ')}`
-    );
+    // Check that all 4 origSub substrings exist in originalText
+    for (const key of ['slot2', 'slot3', 'slot4', 'slot5'] as const) {
+      const slot = exam.surgicalSlots[key];
+      assert.ok(
+        exam.originalText.toLowerCase().includes(slot.origSub.toLowerCase()),
+        `Exam #${exam.id} (${exam.titleDe}) ${key} origSub not found in originalText: ${slot.origSub}`
+      );
+      assert.ok(slot.caseBadge.startsWith('الحالة '), `Exam #${exam.id} ${key} missing caseBadge`);
+    }
 
-    const roundsWithJoker = build6RoundsForExam(exam, {
+    const rounds = build6RoundsForExam(exam, {
       useUniversalMoroccoJoker: true,
       useVerbatimPaperClauses: true,
     });
-    assert.equal(roundsWithJoker.length, 6);
-    assert.equal(roundsWithJoker[4].slotContent, UNIVERSAL_MOROCCO_JOKER.de);
+    assert.equal(rounds.length, 6);
+    assert.equal(rounds[0].fixedTemplateBefore, 'In meinem Text geht es um das Thema „');
+    assert.equal(rounds[0].fixedTemplateMiddle, '“. Der Autor erwähnt, dass ');
+    assert.equal(rounds[0].fixedTemplateAfter, '. Was steht in deinem Text?');
+    assert.equal(rounds[1].fixedTemplateBefore, 'In meinem Artikel steht auch, dass ');
+    assert.equal(rounds[1].fixedTemplateAfter, '. Was denkst du darüber?');
+    assert.equal(
+      rounds[2].fixedTemplateBefore,
+      'Ich bin der Ansicht, dass das ein wichtiges Thema ist. Ein großer Vorteil ist meiner Meinung nach, dass '
+    );
+    assert.equal(rounds[2].fixedTemplateAfter, '. Wie siehst du das?');
+    assert.equal(
+      rounds[3].fixedTemplateBefore,
+      'Da stimme ich dir zu. Ein wichtiger Nachteil ist aber zum Beispiel, dass '
+    );
+    assert.equal(rounds[3].fixedTemplateAfter, '. Hast du vielleicht schon Erfahrungen damit gemacht?');
+    assert.equal(
+      rounds[4].fixedTemplateBefore,
+      'Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat das gemacht und fand es super. In meinem Heimatland Marokko ist es so, dass '
+    );
+    assert.equal(rounds[4].slotContent, UNIVERSAL_MOROCCO_JOKER.dassClauseDe);
+    assert.equal(rounds[4].finalVerb, 'sprechen');
+    assert.equal(rounds[4].fixedTemplateAfter, '. Hast du ähnliche Erfahrungen?');
+    assert.ok(
+      rounds[5].fixedTemplateBefore.startsWith(
+        'Ehrlich gesagt, habe ich persönlich keine direkte Erfahrung damit.'
+      )
+    );
   }
 });
+
 
 

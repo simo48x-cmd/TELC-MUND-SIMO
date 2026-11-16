@@ -4,7 +4,10 @@ import { IdeaCardItem, Teil2Exam, Teil3PlanningPoint, Teil3Topic, JobInterviewQu
  * Extracts the final word (conjugated verb in a German dass-clause)
  * and the preceding body of the clause for visual gold verb-end highlighting.
  */
-export function splitClauseFinalVerb(clause: string): {
+export function splitClauseFinalVerb(
+  clause: string,
+  explicitFinalVerb?: string
+): {
   body: string;
   prefix: string;
   finalVerb: string;
@@ -13,12 +16,55 @@ export function splitClauseFinalVerb(clause: string): {
   const raw = clause.trim();
   const punctMatch = raw.match(/([.!?]+)$/);
   const punctuation = punctMatch ? punctMatch[1] : '';
-  const trimmed = raw.replace(/[.!?]+$/, '');
+  const trimmed = raw.replace(/[.!?]+$/, '').trim();
+
+  if (explicitFinalVerb && explicitFinalVerb.trim()) {
+    const cleanExplicit = explicitFinalVerb.trim();
+    if (trimmed.toLowerCase().endsWith(cleanExplicit.toLowerCase())) {
+      const body = trimmed.slice(0, trimmed.length - cleanExplicit.length).trim();
+      const matchedSuffix = trimmed.slice(trimmed.length - cleanExplicit.length);
+      return { body, prefix: body, finalVerb: matchedSuffix, punctuation };
+    }
+  }
+
+  // Handle clauses that have a trailing ", zum Beispiel ..." after the verb (e.g. "... zu Hause kochen, zum Beispiel Tajine oder Couscous")
+  const zbMatch = trimmed.match(/^(.*?)\s+([a-zäöüß]+)(,\s*zum Beispiel\s+.*)$/i);
+  if (zbMatch) {
+    const beforeVerb = zbMatch[1].trim();
+    const verbBeforeZb = zbMatch[2].trim();
+    const afterVerb = zbMatch[3];
+    return {
+      body: beforeVerb,
+      prefix: beforeVerb,
+      finalVerb: verbBeforeZb,
+      punctuation: `${afterVerb}${punctuation}`,
+    };
+  }
+
+  // Handle common two-word final verb complexes at the end of a dass-clause (e.g. "auslösen kann", "verbunden ist", "erwartet wird", "übertragen lassen", "motiviert werden")
   const parts = trimmed.split(/\s+/);
   if (parts.length <= 1) {
     return { body: '', prefix: '', finalVerb: trimmed, punctuation };
   }
-  const finalVerb = parts[parts.length - 1];
+  const lastWord = parts[parts.length - 1];
+  const secondLastWord = parts.length >= 2 ? parts[parts.length - 2] : '';
+  const auxiliarySet = new Set([
+    'kann', 'können', 'könnte', 'könnten', 'muss', 'müssen', 'müsste', 'soll', 'sollen', 'sollte', 'sollten',
+    'will', 'wollen', 'darf', 'dürfen', 'wird', 'werden', 'wurde', 'wurden', 'ist', 'sind', 'war', 'waren',
+    'hat', 'haben', 'hatte', 'hatten', 'lassen', 'lässt', 'gehen', 'geht', 'bleiben', 'bleibt'
+  ]);
+  if (
+    parts.length >= 3 &&
+    auxiliarySet.has(lastWord.toLowerCase()) &&
+    /^[a-zäöüß]+(en|n|t)$/i.test(secondLastWord) &&
+    secondLastWord[0] === secondLastWord[0].toLowerCase()
+  ) {
+    const twoWordVerb = `${secondLastWord} ${lastWord}`;
+    const body = parts.slice(0, -2).join(' ');
+    return { body, prefix: body, finalVerb: twoWordVerb, punctuation };
+  }
+
+  const finalVerb = lastWord;
   const body = parts.slice(0, -1).join(' ');
   return { body, prefix: body, finalVerb, punctuation };
 }
@@ -438,7 +484,7 @@ export function getExpectedSentenceForTurn(ctx: SimulatorTurnContext): {
   if (ctx.mode === 'teil2' && ctx.teil2Exam) {
     const ex = ctx.teil2Exam;
     if (ctx.roundNumber <= 1) {
-      const s = `Der Text befasst sich mit dem Thema „${ex.slot1Theme}“. Zuerst wird beschrieben, ${formatDassClause(ex.slot2Point1)} Welche Informationen hast du noch gefunden?`;
+      const s = `In meinem Text geht es um das Thema „${ex.slot1Theme}“. Der Autor erwähnt, ${formatDassClause(ex.slot2Point1)} Was steht in deinem Text?`;
       return {
         targetSentenceDe: s,
         roundLabelDarija: '🏓 الجولة 1 (نتا): الدخلة + الفكرة 1 من الورقة + سؤال للبارتنر',
@@ -446,14 +492,14 @@ export function getExpectedSentenceForTurn(ctx: SimulatorTurnContext): {
       };
     }
     if (ctx.roundNumber === 3) {
-      const s = `Ich bin der Ansicht, dass dieses Thema sehr wichtig ist. Ein großer Vorteil ist meiner Meinung nach, ${formatDassClause(ex.slot4Advantage)} Wie siehst du das?`;
+      const s = `Ich bin der Ansicht, dass das ein wichtiges Thema ist. Ein großer Vorteil ist meiner Meinung nach, ${formatDassClause(ex.slot4Advantage)} Wie siehst du das?`;
       return {
         targetSentenceDe: s,
         roundLabelDarija: '🏓 الجولة 3 (نتا): رأيك الشخصي + الإيجابية (Vorteil) + سؤال للبارتنر',
         hintFirst4Words: extractFirstFourWordsHint(s)
       };
     }
-    const s = `Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat mir davon erzählt. In meinem Heimatland Marokko ist es oft so, ${formatDassClause(ex.slot6Morocco)}`;
+    const s = `Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat das gemacht und fand es super. In meinem Heimatland Marokko ist es so, ${formatDassClause(ex.slot6Morocco)} Hast du ähnliche Erfahrungen?`;
     return {
       targetSentenceDe: s,
       roundLabelDarija: '🏓 الجولة 5 (نتا): الجوكر ديال التجربة والواقع فـ المغرب (SLOT 6)',
@@ -590,15 +636,15 @@ export function evaluateSimulatorTurnDeterministically(ctx: SimulatorTurnContext
       score = Math.max(18, Math.min(60, score));
       const cefr: 'A1' | 'A2' | 'B1' | 'B2' = score >= 48 ? 'B2' : score >= 36 ? 'B1' : 'A2';
 
-      const partnerRonde2Reply = `Außerdem wird im Text noch erwähnt, ${formatDassClause(ex.slot3Point2)} Was ist deine persönliche Meinung zu diesem Thema?`;
+      const partnerRonde2Reply = `In meinem Artikel steht auch, ${formatDassClause(ex.slot3Point2)} Was denkst du darüber?`;
       const nextCtx: SimulatorTurnContext = { ...ctx, roundNumber: 3 };
       const nextTarget = getExpectedSentenceForTurn(nextCtx);
 
       const feedbackParts: string[] = [];
       feedbackParts.push(
         hasEinleitung
-          ? '✅ برافو! بديتي بالدخلة الأكاديمية (Der Text befasst sich mit...).'
-          : '⚠️ نسيتي الدخلة الثابتة (Der Text befasst sich mit dem Thema... Zuerst wird beschrieben, dass...).'
+          ? '✅ برافو! بديتي بالدخلة (In meinem Text geht es um das Thema...).'
+          : '⚠️ نسيتي الدخلة الثابتة (In meinem Text geht es um das Thema... Der Autor erwähnt, dass...).'
       );
       feedbackParts.push(
         slotEval.verbAtEndCorrect
@@ -606,7 +652,7 @@ export function evaluateSimulatorTurnDeterministically(ctx: SimulatorTurnContext
           : `⚠️ رد البال لترتيب الفعل فـ آخر الجملة مورا dass (${splitClauseFinalVerb(ex.slot2Point1).finalVerb}).`
       );
       if (!hasQuestionToPartner) {
-        feedbackParts.push('💡 ما تنساش تسول صاحبك فاللخر: Welche Informationen hast du noch gefunden?');
+        feedbackParts.push('💡 ما تنساش تسول صاحبك فاللخر: Was steht in deinem Text?');
       }
       feedbackParts.push('🏓 دابا البارتنر جاوبك بالجولة 2 وسولك على رأيك — نطق الجولة 3 (الرأي + الإيجابية)!');
 
@@ -698,7 +744,7 @@ export function evaluateSimulatorTurnDeterministically(ctx: SimulatorTurnContext
     const cefr: 'A1' | 'A2' | 'B1' | 'B2' = score >= 48 ? 'B2' : score >= 36 ? 'B1' : 'A2';
 
     const partnerRonde6Reply =
-      'Das ist wirklich interessant zu hören, wie das in Marokko ist! Zusammenfassend lässt sich sagen, dass dieses Thema sowohl Vorteile als auch Nachteile hat, aber für unsere Gesellschaft sehr wichtig bleibt.';
+      'Ehrlich gesagt, habe ich persönlich keine direkte Erfahrung damit. Aber in meinem Freundeskreis ist das ein großes Thema. Ein guter Freund von mir hat das ausprobiert und mir viel darüber erzählt. Außerdem merke ich, dass dieses Thema auch in Marokko immer wichtiger wird.';
     const allScores = [...(ctx.previousTurnScores || []), score];
     const avgScore = Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length);
     const quarter = Math.round(avgScore / 4);
@@ -990,7 +1036,7 @@ export function buildIdeaBankForExam(exam: Teil2Exam): IdeaCardItem[] {
     {
       id: `exam-${exam.id}-distractor-1`,
       slotIndex: 0,
-      labelBadge: '⚠️ فخ غرامير (فعل فوسط الجملة)',
+      labelBadge: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)',
       germanClause: 'dieses Thema hat überhaupt keine Bedeutung im Alltag',
       darijaHint: 'فخ! الفعل (hat) جا فـ الوسط وماشي فاللخر د الجملة مور dass',
       finalVerb: 'Alltag',
@@ -999,7 +1045,7 @@ export function buildIdeaBankForExam(exam: Teil2Exam): IdeaCardItem[] {
     {
       id: `exam-${exam.id}-distractor-2`,
       slotIndex: 0,
-      labelBadge: '⚠️ فخ غرامير (فعل ماشي فاللخر)',
+      labelBadge: '⚠️ فخ ترتيب الفعل (Trap Card — الفعل خاصو يرجع للأخير!)',
       germanClause: 'viele Menschen interessieren sich überhaupt nicht dafür heute',
       darijaHint: 'فخ! الفعل (interessieren) خاصو يكون فاللخر د الجملة',
       finalVerb: 'heute',
@@ -1059,7 +1105,7 @@ export function getTeleprompterWhisperLevels(ctx: SimulatorTurnContext): {
     if (ctx.roundNumber <= 1) {
       return {
         level1Darija: `💡 قول دابا الفكرة 1 من الورقة: ${ex.slot2Darija || `الموضوع هو ${ex.titleDarija}`}`,
-        level2StarterDe: `Der Text befasst sich mit dem Thema „${ex.slot1Theme}“. Zuerst wird beschrieben, dass ... [Verb am Ende]. Welche Informationen hast du noch gefunden?`,
+        level2StarterDe: `In meinem Text geht es um das Thema „${ex.slot1Theme}“. Der Autor erwähnt, dass ... [Verb am Ende]. Was steht in deinem Text?`,
         level3FullDe: expected.targetSentenceDe,
         rescueInterruptPhraseDe,
         rescuePartnerPhraseDe
@@ -1069,16 +1115,16 @@ export function getTeleprompterWhisperLevels(ctx: SimulatorTurnContext): {
       return {
         level1Darija: `💡 قول دابا رأيك + الإيجابية (Vorteil): ${ex.slot4Darija || 'هاد الموضوع مهم بزاف وعندو إيجابيات فـ الحياة اليومية'}`,
         level2StarterDe:
-          'Ich bin der Ansicht, dass dieses Thema sehr wichtig ist. Ein großer Vorteil ist meiner Meinung nach, dass ... [Verb am Ende]. Wie siehst du das?',
+          'Ich bin der Ansicht, dass das ein wichtiges Thema ist. Ein großer Vorteil ist meiner Meinung nach, dass ... [Verb am Ende]. Wie siehst du das?',
         level3FullDe: expected.targetSentenceDe,
         rescueInterruptPhraseDe,
         rescuePartnerPhraseDe
       };
     }
     return {
-      level1Darija: `💡 قول دابا الجوكر ديال التجربة والواقع فـ المغرب: ${ex.slot6Darija || 'فـ بلادي المغرب وبخصوص مدينة فاس...'}`,
+      level1Darija: `💡 قول دابا الجوكر ديال التجربة والواقع فـ المغرب: ${ex.slot6Darija || 'فـ بلادي المغرب...'}`,
       level2StarterDe:
-        'Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat mir davon erzählt. In meinem Heimatland Marokko ist es oft so, dass ... [Verb am Ende].',
+        'Persönlich habe ich keine direkte Erfahrung, aber ein Freund von mir hat das gemacht und fand es super. In meinem Heimatland Marokko ist es so, dass ... [Verb am Ende]. Hast du ähnliche Erfahrungen?',
       level3FullDe: expected.targetSentenceDe,
       rescueInterruptPhraseDe,
       rescuePartnerPhraseDe
